@@ -1,8 +1,11 @@
-# ml-extensions
+# Page Voice
 
 Chrome extension (MV3) that upgrades the pages you already browse with
 on-device ML, powered by [LiteRT.js](https://www.npmjs.com/package/@litertjs/core)
 (WebGPU + WASM). All inference is local — nothing leaves the device.
+
+Sibling project: [litertjs-demos](https://github.com/john-rocky/litertjs-demos)
+— the same models as zero-install web pages (photo → 3D, text → speech).
 
 First effect: **Page Voice** — give any page a voice.
 
