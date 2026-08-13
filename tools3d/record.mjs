@@ -198,14 +198,13 @@ try {
   };
   await raise();
 
-  // Pre-pass (not recorded): accept the Pexels cookie banner once, warm all
-  // three pages' CDN caches, and warm the depth engine + shader.
+  // Pre-pass (not recorded): accept the Pexels cookie banner once, warm both
+  // pages' CDN caches, and warm the depth engine + shader.
   await nav('https://www.pexels.com/search/landscape/', 4000);
   await evalIn(cdp, pageSession,
     `[...document.querySelectorAll('button')]
        .find((b) => /accept all/i.test(b.textContent))?.click(), null`);
   await sleep(800);
-  await nav('https://www.pexels.com/search/portrait/', 4000);
   await nav('https://en.wikipedia.org/wiki/Albert_Einstein', 3500);
   // The warm hover is what absorbs the first-run GPU warm-up (~5 s) and
   // caches the depth result — wait for the image, don't skip.
@@ -244,10 +243,11 @@ try {
   step(`engine runs after scene1: ${await engineRuns()}`);
   mark('scene1end');
 
-  // Scenes 2 & 3 — Pexels masonry grids (Pexels License, no attribution
-  // required). Scroll past the header (and the sponsor tile that sits in
-  // the first rows), let the lazy-loaded images land, then feature the
-  // `count` biggest fully-visible photos.
+  // Scene 3 — Pexels masonry grid (Pexels License, no attribution required).
+  // Landscape only: portrait-category tiles grow a Canva "Add Text" control
+  // on hover that shows on camera. Scroll past the header (and the sponsor
+  // tile that sits in the first rows), let the lazy-loaded images land, then
+  // feature the `count` biggest fully-visible photos.
   const pexelsScene = async (term, count, markName, focusV) => {
     await nav(`https://www.pexels.com/search/${term}/`, 3000);
     await evalIn(cdp, pageSession, `scrollTo({ top: 900, behavior: 'smooth' }), null`);
@@ -268,8 +268,7 @@ try {
     step(`pexels ${term} picks: ${grids.length}`);
     for (const g of grids) await feature(g, 3400, focusV);
   };
-  await pexelsScene('portrait', 2, 'scene2', 0.3);
-  await pexelsScene('landscape', 2, 'scene3');
+  await pexelsScene('landscape', 3, 'scene3');
   mark('end');
 
   if (dry) {

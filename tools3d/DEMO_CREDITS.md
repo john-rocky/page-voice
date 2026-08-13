@@ -6,7 +6,6 @@ Photos shown in the Page 3D demo video:
   public domain (published in the US in 1947, copyright not renewed) —
   https://commons.wikimedia.org/wiki/File:Albert_Einstein_Head_cleaned.jpg
   (shown as the lead image of the English Wikipedia "Albert Einstein" article)
-- Photos on the Pexels search pages ("portrait" and "landscape") are shown as
-  served by pexels.com; the Pexels License permits use without attribution.
-  Hovered photos include works by Pete Miller Portraits, Shuaizhi Tian, and
-  Christopher Moon.
+- Photos on the Pexels "landscape" search page are shown as served by
+  pexels.com; the Pexels License permits use without attribution. Hovered
+  photos include works by Shuaizhi Tian, Christopher Moon, and Chait Goli.
