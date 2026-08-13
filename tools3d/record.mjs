@@ -123,10 +123,12 @@ async function rectOf(expr) {
 }
 
 /** Hover the image at rect: glide in, wait for the overlay to pop (cold CDN
- * fetches can take >1 s), give the extrude a beat, then sweep. */
-async function feature(rect, holdMs) {
+ * fetches can take >1 s), give the extrude a beat, then sweep. focusV places
+ * the sweep center vertically — for photos of people the tile's geometric
+ * center is the torso, so aim the upper third (the face) instead. */
+async function feature(rect, holdMs, focusV = 0.5) {
   const cx = rect.x + rect.w / 2;
-  const cy = rect.y + rect.h / 2;
+  const cy = rect.y + rect.h * focusV;
   await glide(cx, cy, 550);
   let state = 'none';
   const until = Date.now() + 6000;
@@ -246,7 +248,7 @@ try {
   // required). Scroll past the header (and the sponsor tile that sits in
   // the first rows), let the lazy-loaded images land, then feature the
   // `count` biggest fully-visible photos.
-  const pexelsScene = async (term, count, markName) => {
+  const pexelsScene = async (term, count, markName, focusV) => {
     await nav(`https://www.pexels.com/search/${term}/`, 3000);
     await evalIn(cdp, pageSession, `scrollTo({ top: 900, behavior: 'smooth' }), null`);
     await sleep(2500);
@@ -264,9 +266,9 @@ try {
       return JSON.stringify(rs);
     })()`));
     step(`pexels ${term} picks: ${grids.length}`);
-    for (const g of grids) await feature(g, 3400);
+    for (const g of grids) await feature(g, 3400, focusV);
   };
-  await pexelsScene('portrait', 2, 'scene2');
+  await pexelsScene('portrait', 2, 'scene2', 0.3);
   await pexelsScene('landscape', 2, 'scene3');
   mark('end');
 
