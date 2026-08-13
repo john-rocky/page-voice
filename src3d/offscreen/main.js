@@ -24,6 +24,14 @@ const MASK_THRESHOLD = 0.5;
 // src3d/content.js: q = mix(DISP_MIN, DISP_MAX, n16/65535).
 const DISP_MIN = 0.5;
 const DISP_MAX = 2.2;
+// Close-ups span a narrow disparity band (p95/p05 ≈ 1.1–1.5) and extrude
+// weakly under the fixed clamp range. Amplify narrow-range images with a
+// per-image exponent q^γ (median plane stays at q = 1, monotonic), aiming
+// for RANGE_TARGET; near-flat content (graphics, screenshots) is left alone
+// so noise isn't blown up, and wide-range scenes are never compressed.
+const RANGE_TARGET = 2.0;
+const RANGE_FLAT = 1.06;
+const GAMMA_MAX = 3;
 const PHOTO_MAX_SIDE = 1024;
 const CACHE_ENTRIES = 8;
 
@@ -271,6 +279,14 @@ function packDepth(points, mask, rect) {
   if (depths.length < 32) throw new Error('no confident depth in this image');
   depths.sort((a, b) => a - b);
   const median = depths[depths.length >> 1];
+  // Depth-percentile ratio == disparity-percentile ratio (q = median / d).
+  const p05 = depths[Math.floor(depths.length * 0.05)];
+  const p95 = depths[Math.min(depths.length - 1, Math.floor(depths.length * 0.95))];
+  const ratio = p95 / Math.max(p05, 1e-6);
+  let gamma = 1;
+  if (ratio > RANGE_FLAT && ratio < RANGE_TARGET) {
+    gamma = Math.min(GAMMA_MAX, Math.log(RANGE_TARGET) / Math.log(ratio));
+  }
 
   const out = new ImageData(drawW, drawH);
   const px = out.data;
@@ -284,7 +300,7 @@ function packDepth(points, mask, rect) {
       const valid = mask[i] > MASK_THRESHOLD && Number.isFinite(d) && d > 0;
       let n = 0; // invalid → far
       if (valid) {
-        const q = Math.min(DISP_MAX, Math.max(DISP_MIN, median / d));
+        const q = Math.min(DISP_MAX, Math.max(DISP_MIN, (median / d) ** gamma));
         n = (q - DISP_MIN) / (DISP_MAX - DISP_MIN);
         validCount++;
         if (n < nMin) nMin = n;
@@ -304,6 +320,8 @@ function packDepth(points, mask, rect) {
       validRatio: +(validCount / (drawW * drawH)).toFixed(3),
       nMin: +nMin.toFixed(3),
       nMax: +nMax.toFixed(3),
+      dispRatio: +ratio.toFixed(2),
+      gamma: +gamma.toFixed(2),
     },
   };
 }
