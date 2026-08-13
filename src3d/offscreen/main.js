@@ -244,8 +244,12 @@ function resolveOutputs(buffers) {
   const big = buffers.filter((b) => b.length === plane * 3);
   const mask = buffers.find((b) => b.length === plane);
   if (big.length !== 2 || !mask) throw new Error('unexpected model outputs');
-  const points = sampleAbsMax(big[0]) > 2 ? big[0] : big[1];
-  return { points, mask };
+  const pointsFirst = sampleAbsMax(big[0]) > 2;
+  return {
+    points: pointsFirst ? big[0] : big[1],
+    normals: pointsFirst ? big[1] : big[0],
+    mask,
+  };
 }
 
 async function infer(nchw) {
@@ -326,6 +330,51 @@ function packDepth(points, mask, rect) {
   };
 }
 
+/** MoGe normals (camera frame, unit vectors) → RGB PNG, (n + 1) / 2 per
+ * channel, content rect only. Invalid pixels get the camera-facing normal so
+ * relighting stays neutral there. The mean z of confident normals is reported
+ * so the shader-side frame convention can be checked empirically (OpenCV
+ * camera frame: z forward-positive → camera-facing normals have z < 0). */
+function packNormals(normals, mask, rect) {
+  const { offX, offY, drawW, drawH } = rect;
+  const out = new ImageData(drawW, drawH);
+  const px = out.data;
+  let sumZ = 0;
+  let sumLen = 0;
+  let count = 0;
+  for (let y = 0; y < drawH; y++) {
+    for (let x = 0; x < drawW; x++) {
+      const i = (y + offY) * SIZE + (x + offX);
+      const nx = normals[i * 3];
+      const ny = normals[i * 3 + 1];
+      const nz = normals[i * 3 + 2];
+      const len = Math.hypot(nx, ny, nz);
+      const valid = mask[i] > MASK_THRESHOLD && len > 0.5 && len < 1.5;
+      const o = (y * drawW + x) * 4;
+      if (valid) {
+        px[o] = Math.round(((nx / len) * 0.5 + 0.5) * 255);
+        px[o + 1] = Math.round(((ny / len) * 0.5 + 0.5) * 255);
+        px[o + 2] = Math.round(((nz / len) * 0.5 + 0.5) * 255);
+        sumZ += nz / len;
+        sumLen += len;
+        count++;
+      } else {
+        px[o] = 128;
+        px[o + 1] = 128;
+        px[o + 2] = 0; // z = -1: straight at the camera
+      }
+      px[o + 3] = 255;
+    }
+  }
+  return {
+    imageData: out,
+    stats: {
+      normalMeanZ: count ? +(sumZ / count).toFixed(3) : null,
+      normalMeanLen: count ? +(sumLen / count).toFixed(3) : null,
+    },
+  };
+}
+
 async function canvasToDataUrl(imageDataOrBitmap, type, quality) {
   const w = imageDataOrBitmap.width;
   const h = imageDataOrBitmap.height;
@@ -391,9 +440,11 @@ async function runDepth(url, { forceRelay = false } = {}) {
   const { bytes, via, fetchMs } = await fetchImageBytes(url, { forceRelay });
   const bitmap = await createImageBitmap(new Blob([bytes]), { imageOrientation: 'from-image' });
   const { nchw, rect } = preprocess(bitmap);
-  const { points, mask, inferMs } = await infer(nchw);
+  const { points, normals, mask, inferMs } = await infer(nchw);
   const { imageData, stats: depthStats } = packDepth(points, mask, rect);
   const depthUrl = await canvasToDataUrl(imageData, 'image/png');
+  const packedNormals = packNormals(normals, mask, rect);
+  const normalUrl = await canvasToDataUrl(packedNormals.imageData, 'image/png');
   const photo = await encodePhoto(bitmap);
   bitmap.close();
 
@@ -403,12 +454,14 @@ async function runDepth(url, { forceRelay = false } = {}) {
     inferMs: +inferMs.toFixed(0),
     via,
     ...depthStats,
+    ...packedNormals.stats,
   };
   broadcast(true);
 
   const payload = {
     ok: true,
     depth: { url: depthUrl, w: imageData.width, h: imageData.height },
+    normal: { url: normalUrl, w: imageData.width, h: imageData.height },
     photo,
     stats: { ...lastStats, backend, env: statusPayload().env },
   };
@@ -428,7 +481,7 @@ globalThis.__p3 = {
     const r = await requestDepth(url, opts);
     if (!r.ok) return r;
     return { ok: true, depthW: r.depth.w, depthH: r.depth.h, photoW: r.photo.w,
-      photoH: r.photo.h, stats: r.stats };
+      photoH: r.photo.h, normalW: r.normal?.w, normalH: r.normal?.h, stats: r.stats };
   },
 };
 

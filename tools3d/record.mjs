@@ -4,11 +4,14 @@
  * in-page, records the window region with `screencapture -v`, and encodes
  * out3d/page3d-demo.mp4 with ffmpeg.
  *
- *   node tools3d/record.mjs <chrome-binary> [--profile=<dir>] [--dry]
+ *   node tools3d/record.mjs <chrome-binary> [--profile=<dir>] [--dry] [--light]
  *
  * --dry runs the full tour with logging but no recording/encode — ALWAYS
  * preflight with it before a recorded take (every beat must log
  * "overlay: active" before the camera rolls).
+ * --light shoots the cursor-light demo: each beat is a short parallax sweep,
+ * then Shift held while the cursor wanders as a flashlight
+ * (out3d/page3d-light-demo.mp4).
  * Needs Screen Recording permission for the terminal. Keep the desktop
  * hands-off during the take — the recorded window must stay unoccluded.
  * Timeline anchoring: recording start = stopWall − ffprobe duration (the
@@ -24,15 +27,16 @@ import {
 const chromeBin = process.argv[2];
 const profile = process.argv.find((a) => a.startsWith('--profile='))?.slice(10);
 const dry = process.argv.includes('--dry');
+const lightMode = process.argv.includes('--light');
 if (!chromeBin) {
-  console.error('usage: node tools3d/record.mjs <chrome-binary> [--profile=<dir>]');
+  console.error('usage: node tools3d/record.mjs <chrome-binary> [--profile=<dir>] [--dry] [--light]');
   process.exit(2);
 }
 
 const outDir = resolve(import.meta.dirname, '..', 'out3d');
 mkdirSync(outDir, { recursive: true });
-const rawMov = resolve(outDir, 'page3d-raw.mov');
-const outMp4 = resolve(outDir, 'page3d-demo.mp4');
+const rawMov = resolve(outDir, lightMode ? 'page3d-light-raw.mov' : 'page3d-raw.mov');
+const outMp4 = resolve(outDir, lightMode ? 'page3d-light-demo.mp4' : 'page3d-demo.mp4');
 
 // Window rect (screen points). Below the menu bar; 16:10-ish inner page.
 const WIN = { left: 80, top: 60, width: 1280, height: 840 };
@@ -94,6 +98,28 @@ async function sweep(cx, cy, rx, ry, ms) {
   await glide(cx, cy, 250);
 }
 
+/** Flashlight beat: hold Shift (the overlay's light toggle) and wander the
+ * cursor in a ramped figure-8 — the lit pool traces the subject. */
+async function lightSweep(cx, cy, rx, ry, ms) {
+  step(`light sweep @ ${Math.round(cx)},${Math.round(cy)} for ${ms}ms`);
+  const key = (type) => cdp.send('Input.dispatchKeyEvent',
+    { type, key: 'Shift', windowsVirtualKeyCode: 16, modifiers: 8 }, pageSession);
+  await key('rawKeyDown');
+  await sleep(450); // light fades in
+  const t0 = performance.now();
+  for (;;) {
+    const el = performance.now() - t0;
+    if (el >= ms) break;
+    const t = (el / ms) * Math.PI * 3; // 1.5 lazy cycles
+    const ramp = Math.min(1, el / (ms * 0.25));
+    await move(cx + Math.sin(t) * rx * ramp, cy + Math.sin(t * 2) * ry * 0.6 * ramp);
+    await sleep(16);
+  }
+  await glide(cx, cy, 300);
+  await key('keyUp');
+  await sleep(350); // light fades out before the cursor leaves
+}
+
 async function nav(url, settleMs = 2500) {
   step(`nav ${url}`);
   await cdp.send('Page.navigate', { url }, pageSession);
@@ -142,7 +168,12 @@ async function feature(rect, holdMs, focusV = 0.5) {
   }
   step(`overlay: ${state}`);
   await sleep(700); // extrude-in settles
-  await sweep(cx, cy, rect.w * 0.34, rect.h * 0.26, holdMs);
+  if (lightMode) {
+    await sweep(cx, cy, rect.w * 0.34, rect.h * 0.26, Math.round(holdMs * 0.45));
+    await lightSweep(cx, cy, rect.w * 0.3, rect.h * 0.24, holdMs);
+  } else {
+    await sweep(cx, cy, rect.w * 0.34, rect.h * 0.26, holdMs);
+  }
 }
 
 const markers = {};
@@ -257,15 +288,17 @@ try {
     const grids = JSON.parse(await evalIn(cdp, pageSession, `(() => {
       const rs = [...document.images]
         .filter((i) => i.complete && i.naturalWidth > 100)
-        .map((i) => i.getBoundingClientRect())
-        .filter((r) => r.top > 20 && r.bottom < innerHeight && r.width >= 200 && r.height >= 160)
-        .sort((a, b) => b.width * b.height - a.width * a.height)
+        .map((i) => [i, i.getBoundingClientRect()])
+        .filter(([, r]) => r.top > 20 && r.bottom < innerHeight && r.width >= 200 && r.height >= 160)
+        .sort((a, b) => b[1].width * b[1].height - a[1].width * a[1].height)
         .slice(0, ${count})
-        .sort((a, b) => a.left - b.left)
-        .map((r) => ({ x: r.left, y: r.top, w: r.width, h: r.height }));
+        .sort((a, b) => a[1].left - b[1].left)
+        .map(([i, r]) => ({ x: r.left, y: r.top, w: r.width, h: r.height,
+          alt: i.alt || '', href: i.closest("a[href*='/photo/']")?.href ?? '' }));
       return JSON.stringify(rs);
     })()`));
     step(`pexels ${term} picks: ${grids.length}`);
+    for (const g of grids) step(`credit: ${g.alt} — ${g.href}`);
     for (const g of grids) await feature(g, 3400, focusV);
   };
   await pexelsScene('landscape', 3, 'scene3');

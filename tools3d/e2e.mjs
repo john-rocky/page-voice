@@ -151,7 +151,26 @@ try {
   await pin();
   await shot(cdp, session, 'right', clip);
 
-  console.log('E2E_RESULT ' + JSON.stringify({ active, rect }, null, 2));
+  // Cursor light: hold Shift and capture the flashlight at two positions —
+  // the lit pool must follow the cursor (compare light-a vs light-b, and
+  // either against center for the ambient dim).
+  const key = (type) => cdp.send('Input.dispatchKeyEvent',
+    { type, key: 'Shift', windowsVirtualKeyCode: 16, modifiers: 8 }, session);
+  await key('rawKeyDown');
+  await move(rect.x + rect.w * 0.3, rect.y + rect.h * 0.35);
+  await sleep(700); // light fade-in ≈ 0.16/frame
+  await pin();
+  await shot(cdp, session, 'light-a', clip);
+  await move(rect.x + rect.w * 0.72, rect.y + rect.h * 0.6);
+  await sleep(700);
+  await pin();
+  await shot(cdp, session, 'light-b', clip);
+  await key('keyUp');
+  const lightState = await evalIn(cdp, session,
+    `document.querySelector('[data-page3d]')?.dataset.page3d ?? null`);
+  if (lightState !== 'active') throw new Error(`overlay lost during light beat: ${lightState}`);
+
+  console.log('E2E_RESULT ' + JSON.stringify({ active, light: true, rect }, null, 2));
   await cdp.send('Browser.close').catch(() => {});
   server?.close();
   process.exit(0);

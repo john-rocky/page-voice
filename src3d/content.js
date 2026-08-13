@@ -11,6 +11,10 @@
  * the virtual camera orbits a pivot at the median depth, z-buffered. Depth
  * arrives packed as 16-bit disparity (R hi, G lo) relative to the median —
  * DISP_MIN/DISP_MAX must match src3d/offscreen/main.js.
+ *
+ * Cursor light: hold Shift while the overlay is up and the cursor becomes a
+ * warm point light (MoGe's normal map, Lambert + spot cone), the photo
+ * dimming to ambient around it.
  */
 
 const DISP_MIN = 0.5;
@@ -22,6 +26,9 @@ const ZOOM = 1.06; // slight overscan so edges stay covered while orbiting
 const YAW_AMP = 0.08;
 const PITCH_AMP = 0.05;
 const EXTRUDE_MS = 450;
+// Cursor light: the source sits LIGHT_Z in front of the camera (median plane
+// is at ANCHOR, nearest content at ANCHOR / DISP_MAX ≈ 0.73).
+const LIGHT_Z = 0.5;
 const MIN_W = 150;
 const MIN_H = 110;
 const DWELL_MS = 200;
@@ -152,9 +159,18 @@ window.addEventListener('pointermove', (event) => {
   probeAt(event.clientX, event.clientY);
 }, { passive: true });
 
+// Shift is tracked globally (not per-session) so a hold that starts before
+// the overlay finishes activating still lights it. A modifier alone can't
+// collide with site shortcuts (x.com's single-letter ones included).
+let shiftDown = false;
 window.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') teardown();
+  if (event.key === 'Shift') shiftDown = true;
 }, true);
+window.addEventListener('keyup', (event) => {
+  if (event.key === 'Shift') shiftDown = false;
+}, true);
+window.addEventListener('blur', () => { shiftDown = false; });
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.type === 'activate-3d' && msg.srcUrl) {
@@ -270,6 +286,7 @@ uniform vec2 uRot;        // yaw, pitch (radians)
 uniform float uDispScale; // 0 = flat photo, 1 = full extrusion
 uniform vec4 uUvRect;     // x, y, w, h crop (object-fit: cover)
 out vec2 vUv;
+out vec3 vPos;            // post-rotation view-space position, for lighting
 const float DISP_MIN = ${DISP_MIN};
 const float DISP_MAX = ${DISP_MAX};
 const float ANCHOR = ${ANCHOR};
@@ -292,18 +309,49 @@ void main() {
   float cp = cos(uRot.y), sp = sin(uRot.y);
   rel = vec3(rel.x, cp * rel.y - sp * rel.z, sp * rel.y + cp * rel.z);
   vec3 Q = rel + C;
+  vPos = Q;
   float w = max(-Q.z, NEAR);
   float zNdc = ((w - NEAR) / (FAR - NEAR)) * 2.0 - 1.0;
   gl_Position = vec4(Q.xy / uTanHalf * ZOOM, zNdc * w, w);
 }`;
 
 const FS = `#version 300 es
-precision mediump float;
+precision highp float; // uRot is shared with the VS — precisions must match
 in vec2 vUv;
+in vec3 vPos;
 uniform sampler2D uPhoto;
+uniform sampler2D uNormal;
+uniform vec3 uLight;    // view-space light position (cursor, unprojected)
+uniform float uLightOn; // 0 = plain photo … 1 = flashlight
+uniform vec2 uRot;      // same yaw/pitch the geometry was rotated by
 out vec4 outColor;
+const float AMBIENT = 0.34;
+const float GAIN = 2.3;
+const float ATT = 0.6;         // 1 / (1 + ATT·d²) distance falloff
+const vec2 CONE = vec2(0.80, 0.95); // spot cone cos(outer), cos(inner)
+const vec3 LIGHT_COLOR = vec3(1.0, 0.95, 0.85);
 void main() {
-  outColor = vec4(texture(uPhoto, vUv).rgb, 1.0);
+  vec3 base = texture(uPhoto, vUv).rgb;
+  if (uLightOn < 0.004) {
+    outColor = vec4(base, 1.0);
+    return;
+  }
+  // MoGe normals are OpenCV camera frame (x right, y down, z away from the
+  // camera) — flip y and z into this view space, then rotate with the mesh.
+  vec3 n = texture(uNormal, vUv).rgb * 2.0 - 1.0;
+  vec3 N = normalize(vec3(n.x, -n.y, -n.z));
+  float cy = cos(uRot.x), sy = sin(uRot.x);
+  N = vec3(cy * N.x + sy * N.z, N.y, -sy * N.x + cy * N.z);
+  float cp = cos(uRot.y), sp = sin(uRot.y);
+  N = vec3(N.x, cp * N.y - sp * N.z, sp * N.y + cp * N.z);
+  vec3 toLight = uLight - vPos;
+  float dist = length(toLight);
+  vec3 L = toLight / max(dist, 1e-4);
+  float lambert = max(dot(N, L), 0.0);
+  float cone = smoothstep(CONE.x, CONE.y, dot(-L, vec3(0.0, 0.0, -1.0)));
+  float intensity = GAIN * lambert * cone / (1.0 + ATT * dist * dist);
+  vec3 lit = base * (AMBIENT + intensity * LIGHT_COLOR);
+  outColor = vec4(mix(base, lit, uLightOn), 1.0);
 }`;
 
 function compile(gl, type, src) {
@@ -340,9 +388,10 @@ function makeTexture(gl, image, filter) {
 }
 
 async function buildOverlay(img, payload, token) {
-  const [photoImg, depthImg] = await Promise.all([
+  const [photoImg, depthImg, normalImg] = await Promise.all([
     loadImage(payload.photo.url),
     loadImage(payload.depth.url),
+    payload.normal ? loadImage(payload.normal.url) : null,
   ]);
   if (token !== activateToken || !img.isConnected) return;
 
@@ -413,12 +462,20 @@ async function buildOverlay(img, payload, token) {
   // LINEAR is safe on the packed depth: decode is linear in (r, g), so
   // bilinear filtering commutes with it.
   makeTexture(gl, depthImg, gl.LINEAR);
+  const lightable = Boolean(normalImg);
+  if (lightable) {
+    gl.activeTexture(gl.TEXTURE2);
+    makeTexture(gl, normalImg, gl.LINEAR);
+    gl.uniform1i(gl.getUniformLocation(program, 'uNormal'), 2);
+  }
   gl.uniform1i(gl.getUniformLocation(program, 'uPhoto'), 0);
   gl.uniform1i(gl.getUniformLocation(program, 'uDepth'), 1);
   const uTanHalf = gl.getUniformLocation(program, 'uTanHalf');
   const uRot = gl.getUniformLocation(program, 'uRot');
   const uDispScale = gl.getUniformLocation(program, 'uDispScale');
   const uUvRect = gl.getUniformLocation(program, 'uUvRect');
+  const uLight = gl.getUniformLocation(program, 'uLight');
+  const uLightOn = gl.getUniformLocation(program, 'uLightOn');
 
   gl.enable(gl.DEPTH_TEST);
   gl.depthFunc(gl.LEQUAL);
@@ -426,6 +483,7 @@ async function buildOverlay(img, payload, token) {
 
   const startedAt = performance.now();
   const rot = { yaw: 0, pitch: 0 };
+  let light = 0; // eased toward shiftDown
   let leaveAt = 0;
   let shownLatency = false;
 
@@ -485,12 +543,22 @@ async function buildOverlay(img, payload, token) {
     const extrude = Math.min(1, (now - startedAt) / EXTRUDE_MS);
     const dispScale = 1 - (1 - extrude) ** 3; // ease-out cubic
 
+    light += ((lightable && shiftDown ? 1 : 0) - light) * 0.16;
+    const tanHalfX = TAN_HALF_VFOV * (width / height);
+    // Cursor → view space at the light's depth (inverse of the projection,
+    // ZOOM included). Clamped just past the edges so the pool can graze out.
+    const lnx = Math.max(-1.2, Math.min(1.2, ((lastPointer.x - left) / width) * 2 - 1));
+    const lny = Math.max(-1.2, Math.min(1.2, 1 - ((lastPointer.y - top) / height) * 2));
+
     gl.viewport(0, 0, pw, ph);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    gl.uniform2f(uTanHalf, TAN_HALF_VFOV * (width / height), TAN_HALF_VFOV);
+    gl.uniform2f(uTanHalf, tanHalfX, TAN_HALF_VFOV);
     gl.uniform2f(uRot, rot.yaw, rot.pitch);
     gl.uniform1f(uDispScale, dispScale);
     gl.uniform4f(uUvRect, uv.x, uv.y, uv.w, uv.h);
+    gl.uniform3f(uLight,
+      (lnx / ZOOM) * tanHalfX * LIGHT_Z, (lny / ZOOM) * TAN_HALF_VFOV * LIGHT_Z, -LIGHT_Z);
+    gl.uniform1f(uLightOn, light < 0.004 ? 0 : light);
     gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_INT, 0);
 
     if (host.style.opacity !== '1') {
@@ -500,7 +568,8 @@ async function buildOverlay(img, payload, token) {
     if (!shownLatency && payload.stats) {
       shownLatency = true;
       const env = payload.stats.backend === 'webgpu' ? 'WebGPU' : 'WASM';
-      const b = pill(`MoGe-2 · ${payload.stats.inferMs} ms · ${env} · on-device`);
+      const hint = lightable ? ' · hold ⇧ for light' : '';
+      const b = pill(`MoGe-2 · ${payload.stats.inferMs} ms · ${env} · on-device${hint}`);
       b.style.position = 'absolute';
       b.style.left = '10px';
       b.style.bottom = '10px';

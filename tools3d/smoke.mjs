@@ -74,8 +74,10 @@ try {
     if (summary.ok) {
       const depthUrl = await evalIn(cdp, session, '__p3.lastResult.depth.url');
       const photoUrl = await evalIn(cdp, session, '__p3.lastResult.photo.url');
+      const normalUrl = await evalIn(cdp, session, '__p3.lastResult.normal?.url ?? null');
       saveDataUrl(depthUrl, resolve(outDir, `smoke-${name}-depth.png`));
       saveDataUrl(photoUrl, resolve(outDir, `smoke-${name}-photo.jpg`));
+      if (normalUrl) saveDataUrl(normalUrl, resolve(outDir, `smoke-${name}-normal.png`));
     }
   }
 
