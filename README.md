@@ -8,6 +8,9 @@ Sibling project: [litertjs-demos](https://github.com/john-rocky/litertjs-demos)
 — the same models as zero-install web pages (photo → 3D, text → speech).
 
 First effect: **Page Voice** — give any page a voice.
+Second effect (WIP): **Page 3D** — hover any photo to see it in 3D
+(MoGe-2 depth → plane-mesh parallax). Build with `node build.mjs --3d`
+→ `dist3d/`; smoke/E2E tests live in `tools3d/`.
 
 - Select text on any page → right-click → *Read aloud* (or Alt+R).
 - On ChatGPT / Claude / Gemini, toggle *Auto-read* in the HUD (bottom-right):

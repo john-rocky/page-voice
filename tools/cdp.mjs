@@ -21,6 +21,14 @@ export function launchChrome(bin, { dist, port, profile, url = 'about:blank' }) 
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-sync',
+    // The test window opens on a desktop someone is actively using — keep
+    // rAF/timers running even when another window covers it.
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
+    '--disable-background-timer-throttling',
+    // Reused profiles from Browser.close'd runs otherwise show a "restore
+    // pages?" bubble that ruins recordings.
+    '--hide-crash-restore-bubble',
     url,
   ], { stdio: 'ignore' });
   process.on('exit', () => { try { child.kill(); } catch { /* gone */ } });
@@ -65,10 +73,19 @@ export class Cdp {
     return new Cdp(ws);
   }
 
-  send(method, params = {}, sessionId = undefined) {
+  send(method, params = {}, sessionId = undefined, timeoutMs = 20000) {
     const id = ++this.id;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      // Reject instead of hanging forever: a session whose renderer crashed
+      // or detached mid-navigation simply never answers.
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`CDP ${method} timed out (${timeoutMs}ms)`));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (v) => { clearTimeout(timer); resolve(v); },
+        reject: (e) => { clearTimeout(timer); reject(e); },
+      });
       this.ws.send(JSON.stringify({ id, method, params, sessionId }));
     });
   }
@@ -107,8 +124,9 @@ export async function findTarget(cdp, predicate, timeoutMs = 15000) {
   }
 }
 
-/** Wait for the offscreen TTS engine to reach ready/error; returns final status. */
-export async function waitForEngine(cdp, { timeoutMs = 10 * 60 * 1000 } = {}) {
+/** Wait for the offscreen engine to reach ready/error; returns final status.
+ *  `hook` is the engine's globalThis debug object (__pv = voice, __p3 = 3d). */
+export async function waitForEngine(cdp, { timeoutMs = 10 * 60 * 1000, hook = '__pv' } = {}) {
   const off = await findTarget(cdp, (t) => t.url.includes('/offscreen.html'));
   const session = await attachTo(cdp, off);
   const deadline = Date.now() + timeoutMs;
@@ -119,7 +137,7 @@ export async function waitForEngine(cdp, { timeoutMs = 10 * 60 * 1000 } = {}) {
     let raw = null;
     try {
       raw = await evalIn(cdp, session,
-        `typeof __pv === 'undefined' ? null : JSON.stringify(__pv.status)`);
+        `typeof ${hook} === 'undefined' ? null : JSON.stringify(${hook}.status)`);
     } catch { /* context not ready yet */ }
     if (raw === null) {
       await sleep(300);
