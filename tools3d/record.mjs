@@ -94,40 +94,43 @@ async function glide(x, y, ms) {
   }
 }
 
-/** Lazy figure-8 sweep inside the hovered image — drives the parallax. */
-async function sweep(cx, cy, rx, ry, ms) {
-  step(`sweep @ ${Math.round(cx)},${Math.round(cy)} for ${ms}ms`);
+/** Figure-8 sweep inside the hovered image — drives the parallax. Fast
+ * cycles read as more 3D, not less (wigglegram principle), and show that the
+ * render tracks the cursor at frame rate. */
+async function sweep(cx, cy, rx, ry, ms, cycles = 1) {
+  step(`sweep @ ${Math.round(cx)},${Math.round(cy)} for ${ms}ms ×${cycles}`);
   const t0 = performance.now();
   for (;;) {
     const el = performance.now() - t0;
     if (el >= ms) break;
-    const t = (el / ms) * Math.PI * 2;
+    const t = (el / ms) * Math.PI * 2 * cycles;
     await move(cx + Math.sin(t) * rx, cy + Math.sin(t * 2) * ry * 0.6);
     await sleep(16);
   }
-  await glide(cx, cy, 250);
+  await glide(cx, cy, 200);
 }
 
-/** Flashlight beat: hold Shift (the overlay's light toggle) and wander the
- * cursor in a ramped figure-8 — the lit pool traces the subject. */
-async function lightSweep(cx, cy, rx, ry, ms) {
-  step(`light sweep @ ${Math.round(cx)},${Math.round(cy)} for ${ms}ms`);
+/** Flashlight beat: hold Shift (the overlay's light toggle) and flick the
+ * cursor between anchor points with short dwells — the flick shows the light
+ * tracks instantly, the dwell lets the viewer read the lit pool. */
+async function lightSweep(cx, cy, rx, ry) {
+  step(`light sweep @ ${Math.round(cx)},${Math.round(cy)}`);
   const key = (type) => cdp.send('Input.dispatchKeyEvent',
     { type, key: 'Shift', windowsVirtualKeyCode: 16, modifiers: 8 }, pageSession);
   await key('rawKeyDown');
-  await sleep(450); // light fades in
-  const t0 = performance.now();
-  for (;;) {
-    const el = performance.now() - t0;
-    if (el >= ms) break;
-    const t = (el / ms) * Math.PI * 3; // 1.5 lazy cycles
-    const ramp = Math.min(1, el / (ms * 0.25));
-    await move(cx + Math.sin(t) * rx * ramp, cy + Math.sin(t * 2) * ry * 0.6 * ramp);
-    await sleep(16);
+  await sleep(350); // light fades in
+  const anchors = [
+    [cx - rx, cy - ry * 0.5],
+    [cx + rx, cy - ry * 0.3],
+    [cx + rx * 0.3, cy + ry * 0.8],
+    [cx, cy],
+  ];
+  for (const [x, y] of anchors) {
+    await glide(x, y, 160);
+    await sleep(420);
   }
-  await glide(cx, cy, 300);
   await key('keyUp');
-  await sleep(350); // light fades out before the cursor leaves
+  await sleep(300); // light fades out before the cursor leaves
 }
 
 async function nav(url, settleMs = 2500) {
@@ -180,10 +183,10 @@ async function feature(rect, holdMs, focusV = 0.5) {
   // Punch-in window: cut tight mid-extrude (the pop reads best up close),
   // cut back to the full window once the sweeps end.
   const beat = { in: Date.now() + 250, rect: { x: rect.x, y: rect.y, w: rect.w, h: rect.h } };
-  await sleep(700); // extrude-in settles
+  await sleep(450); // extrude-in settles
   if (lightMode) {
-    await sweep(cx, cy, rect.w * 0.34, rect.h * 0.26, Math.round(holdMs * 0.45));
-    await lightSweep(cx, cy, rect.w * 0.3, rect.h * 0.24, holdMs);
+    await sweep(cx, cy, rect.w * 0.34, rect.h * 0.26, 1100, 2);
+    await lightSweep(cx, cy, rect.w * 0.3, rect.h * 0.24);
   } else {
     await sweep(cx, cy, rect.w * 0.34, rect.h * 0.26, holdMs);
   }
@@ -209,8 +212,13 @@ function ffprobeRaw() {
 }
 
 /** Hard-cut edit: full window between beats, punch-in crop (image ≈ 85% of
- * frame height, page context kept as margin) during each beat. All times are
- * wall-clock anchored to recording start = stopWall − raw duration. */
+ * frame height, page context kept as margin) during each beat. Everything
+ * between beats (navs, scrolls, glides) plays at WIDE_SPEED — feed viewers
+ * decide in the first ~2 s, so dead time is compressed, beats run 1×. All
+ * times are wall-clock anchored to recording start = stopWall − raw
+ * duration. */
+const WIDE_SPEED = 3;
+
 function encode({ WIN: win, inner, markers: marks, beats: takeBeats, stopWall }) {
   const raw = ffprobeRaw();
   const recStart = stopWall - raw.dur * 1000;
@@ -236,7 +244,7 @@ function encode({ WIN: win, inner, markers: marks, beats: takeBeats, stopWall })
 
   const chains = segs.map((s, i) => {
     let chain = `[i${i}]trim=start=${s.start.toFixed(3)}:end=${s.end.toFixed(3)},` +
-      'setpts=PTS-STARTPTS';
+      (s.rect ? 'setpts=PTS-STARTPTS' : `setpts=(PTS-STARTPTS)/${WIDE_SPEED}`);
     if (s.rect) {
       const r = s.rect;
       let ch = r.h * 1.18 * sc;   // ~9% page context above/below the image
@@ -268,7 +276,9 @@ function encode({ WIN: win, inner, markers: marks, beats: takeBeats, stopWall })
     '-c:v', 'libx264', '-crf', '19', '-pix_fmt', 'yuv420p',
     '-movflags', '+faststart', '-an', outMp4,
   ], { stdio: 'inherit' });
-  console.log(`RECORD_RESULT ${outMp4} (${(B - A).toFixed(1)}s)`);
+  const outDur = segs.reduce(
+    (sum, s) => sum + (s.end - s.start) / (s.rect ? 1 : WIDE_SPEED), 0);
+  console.log(`RECORD_RESULT ${outMp4} (${outDur.toFixed(1)}s)`);
 }
 
 if (encodeOnly) {
