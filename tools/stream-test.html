@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Synthetic chat stream</title></head>
+<body>
+<h1>Synthetic chat stream</h1>
+<p>Mimics a streaming assistant reply (ChatGPT DOM shape) for the auto-read
+watcher. Call <code>startStream()</code> to begin.</p>
+<div data-message-author-role="assistant" id="msg" style="max-width:600px"></div>
+<script>
+  const SENTENCES = [
+    'Hello there, this is the first streamed sentence.',
+    'The second sentence arrives word by word, just like a chat model reply.',
+    'A third one follows with a question, does the watcher catch it?',
+    // no terminal punctuation — exercises the quiet-flush path
+    'Finally the stream ends without punctuation',
+  ];
+  window.streamDone = false;
+  window.startStream = (wordMs = 70) => {
+    const el = document.getElementById('msg');
+    const words = SENTENCES.join(' ').split(' ');
+    let i = 0;
+    const t = setInterval(() => {
+      el.textContent = words.slice(0, ++i).join(' ');
+      if (i >= words.length) {
+        clearInterval(t);
+        window.streamDone = true;
+      }
+    }, wordMs);
+  };
+</script>
+</body>
+</html>
