@@ -349,7 +349,7 @@ function playWav(wav) {
   src.connect(audioCtx.destination);
   const at = Math.max(playCursor ?? 0, audioCtx.currentTime + 0.05);
   src.start(at);
-  mirrorToSink(wav, at);
+  if (__DEV__) mirrorToSink(wav, at);
   playCursor = at + buf.duration;
   liveSources.push(src);
   src.onended = () => {

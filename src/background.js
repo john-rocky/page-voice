@@ -18,10 +18,10 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
-// Dev build: keep the engine warm from browser start — no cold start in
+// Dev build only: keep the engine warm from browser start — no cold start in
 // demos, and it lets automated smoke tests reach the engine without UI.
-// Revisit (create on first use only) before any store release.
-ensureOffscreen().catch(() => {});
+// Store builds create the offscreen document on first use instead.
+if (__DEV__) ensureOffscreen().catch(() => {});
 
 // --- offscreen lifecycle -----------------------------------------------------
 
