@@ -4,8 +4,11 @@
  * in-page, records the window region with `screencapture -v`, and encodes
  * out3d/page3d-demo.mp4 with ffmpeg.
  *
- *   node tools3d/record.mjs <chrome-binary> [--profile=<dir>]
+ *   node tools3d/record.mjs <chrome-binary> [--profile=<dir>] [--dry]
  *
+ * --dry runs the full tour with logging but no recording/encode — ALWAYS
+ * preflight with it before a recorded take (every beat must log
+ * "overlay: active" before the camera rolls).
  * Needs Screen Recording permission for the terminal. Keep the desktop
  * hands-off during the take — the recorded window must stay unoccluded.
  * Timeline anchoring: recording start = stopWall − ffprobe duration (the
@@ -20,6 +23,7 @@ import {
 
 const chromeBin = process.argv[2];
 const profile = process.argv.find((a) => a.startsWith('--profile='))?.slice(10);
+const dry = process.argv.includes('--dry');
 if (!chromeBin) {
   console.error('usage: node tools3d/record.mjs <chrome-binary> [--profile=<dir>]');
   process.exit(2);
@@ -199,12 +203,12 @@ try {
     `[...document.querySelectorAll('button')]
        .find((b) => /accept all/i.test(b.textContent))?.click(), null`);
   await sleep(800);
-  await nav('https://en.wikipedia.org/wiki/Red_fox', 3500);
+  await nav('https://en.wikipedia.org/wiki/Mona_Lisa', 3500);
   // The warm hover is what absorbs the first-run GPU warm-up (~5 s) and
   // caches the depth result — wait for the image, don't skip.
   let warm = null;
   for (let i = 0; i < 15 && !warm; i++) {
-    warm = await rectOf(`document.querySelector('.infobox img')`);
+    warm = await rectOf(`document.querySelector('.infobox-image img')`);
     if (!warm) await sleep(700);
   }
   if (!warm) throw new Error('lead image never loaded for warm-up');
@@ -212,46 +216,29 @@ try {
   await glide(640, 40, 300); // park the cursor off-content
 
   // --- recording starts ---
-  // screencapture refuses to overwrite ("Failed to save to final location")
-  // and we'd silently encode the previous take's raw file.
-  rmSync(rawMov, { force: true });
-  await raise();
-  rec = spawn('screencapture', [
-    '-v', '-x', `-R${WIN.left},${WIN.top},${WIN.width},${WIN.height}`, rawMov,
-  ], { stdio: ['pipe', 'inherit', 'inherit'] });
-  await sleep(4000); // capture can start late; markers anchor the trim
+  if (!dry) {
+    // screencapture refuses to overwrite ("Failed to save to final
+    // location") and we'd silently encode the previous take's raw file.
+    rmSync(rawMov, { force: true });
+    await raise();
+    rec = spawn('screencapture', [
+      '-v', '-x', `-R${WIN.left},${WIN.top},${WIN.width},${WIN.height}`, rawMov,
+    ], { stdio: ['pipe', 'inherit', 'inherit'] });
+    await sleep(4000); // capture can start late; markers anchor the trim
+  }
 
-  // Scene 1 — Wikipedia article, lead image.
-  await nav('https://en.wikipedia.org/wiki/Red_fox', 2500);
+  // Scene 1 — Wikipedia article, lead image (Mona Lisa: public domain —
+  // no ShareAlike entanglement in the published video).
+  await nav('https://en.wikipedia.org/wiki/Mona_Lisa', 2500);
   await move(640, 40);
   mark('scene1');
   await evalIn(cdp, pageSession, `scrollTo({ top: 120, behavior: 'smooth' }), null`);
   await sleep(1200);
-  const lead = await rectOf(`document.querySelector('.infobox img')`);
+  const lead = await rectOf(`document.querySelector('.infobox-image img')`);
   if (!lead) throw new Error('no lead image');
   await feature(lead, 4200);
   step(`engine runs after scene1: ${await engineRuns()}`);
   mark('scene1end');
-
-  // Scene 2 — same photo in the media viewer (nearly fullscreen). Leave the
-  // image first so the scene-1 overlay tears down before the viewer opens.
-  await glide(640, 640, 350);
-  await sleep(600);
-  await evalIn(cdp, pageSession,
-    `document.querySelector('.infobox a.mw-file-description')?.click(), null`);
-  let big = null;
-  for (let i = 0; i < 8 && !big; i++) {
-    await sleep(500); // viewer + hi-res image load
-    big = await rectOf(
-      `document.querySelector('.mw-mmv-image img, img.mw-mmv-final-image')`);
-  }
-  if (big) {
-    mark('scene2');
-    await feature(big, 5200);
-  } else {
-    step('media viewer image not found — skipping scene 2');
-  }
-  mark('scene2end');
 
   // Scene 3 — Pexels masonry grid, three photos in a row. Scroll past the
   // header (and the sponsor tile that sits in the first rows), let the
@@ -276,6 +263,12 @@ try {
   for (const g of grids) await feature(g, 3400);
   mark('end');
 
+  if (dry) {
+    console.log('DRY_RESULT tour complete — check every beat logged "overlay: active"');
+    clearTimeout(watchdog);
+    await cdp.send('Browser.close').catch(() => {});
+    process.exit(0);
+  }
   await sleep(1200);
   rec.kill('SIGINT');
   await new Promise((r) => rec.on('exit', r));
