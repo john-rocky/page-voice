@@ -16,9 +16,16 @@
  * hands-off during the take — the recorded window must stay unoccluded.
  * Timeline anchoring: recording start = stopWall − ffprobe duration (the
  * capture can start seconds late), scene markers are wall-clock.
+ *
+ * Framing: the effect region is tiny at feed size (a 250-px-wide infobox
+ * image inside a 1280-px window is ~70 px on a phone timeline), so the
+ * encode hard-cuts between the full window and a punch-in crop around the
+ * hovered image during each beat. Beat rects + timing are saved as a JSON
+ * next to the raw capture; --encode-only re-runs just the edit from those
+ * two files, so framing tweaks never need another hands-off take.
  */
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
   Cdp, attachTo, evalIn, findTarget, launchChrome, sleep, waitForEndpoint, waitForEngine,
@@ -28,8 +35,10 @@ const chromeBin = process.argv[2];
 const profile = process.argv.find((a) => a.startsWith('--profile='))?.slice(10);
 const dry = process.argv.includes('--dry');
 const lightMode = process.argv.includes('--light');
-if (!chromeBin) {
-  console.error('usage: node tools3d/record.mjs <chrome-binary> [--profile=<dir>] [--dry] [--light]');
+const encodeOnly = process.argv.includes('--encode-only');
+if (!chromeBin && !encodeOnly) {
+  console.error('usage: node tools3d/record.mjs <chrome-binary> [--profile=<dir>] ' +
+    '[--dry] [--light] | --encode-only [--light]');
   process.exit(2);
 }
 
@@ -37,6 +46,7 @@ const outDir = resolve(import.meta.dirname, '..', 'out3d');
 mkdirSync(outDir, { recursive: true });
 const rawMov = resolve(outDir, lightMode ? 'page3d-light-raw.mov' : 'page3d-raw.mov');
 const outMp4 = resolve(outDir, lightMode ? 'page3d-light-demo.mp4' : 'page3d-demo.mp4');
+const takeJson = resolve(outDir, lightMode ? 'page3d-light-take.json' : 'page3d-take.json');
 
 // Window rect (screen points). Below the menu bar; 16:10-ish inner page.
 const WIN = { left: 80, top: 60, width: 1280, height: 840 };
@@ -167,6 +177,9 @@ async function feature(rect, holdMs, focusV = 0.5) {
     await move(cx + (Math.random() - 0.5) * 2, cy);
   }
   step(`overlay: ${state}`);
+  // Punch-in window: cut tight mid-extrude (the pop reads best up close),
+  // cut back to the full window once the sweeps end.
+  const beat = { in: Date.now() + 250, rect: { x: rect.x, y: rect.y, w: rect.w, h: rect.h } };
   await sleep(700); // extrude-in settles
   if (lightMode) {
     await sweep(cx, cy, rect.w * 0.34, rect.h * 0.26, Math.round(holdMs * 0.45));
@@ -174,11 +187,98 @@ async function feature(rect, holdMs, focusV = 0.5) {
   } else {
     await sweep(cx, cy, rect.w * 0.34, rect.h * 0.26, holdMs);
   }
+  beat.out = Date.now();
+  beats.push(beat);
 }
+
+const beats = [];
 
 const markers = {};
 const mark = (name) => { markers[name] = Date.now(); step(`mark ${name}`); };
 const step = (m) => console.log(`[${new Date().toISOString().slice(11, 19)}] ${m}`);
+
+// --- punch-in encode ---------------------------------------------------------
+
+function ffprobeRaw() {
+  const j = JSON.parse(execFileSync('ffprobe', [
+    '-v', 'error', '-select_streams', 'v:0',
+    '-show_entries', 'stream=width,height', '-show_entries', 'format=duration',
+    '-of', 'json', rawMov,
+  ]).toString());
+  return { w: j.streams[0].width, h: j.streams[0].height, dur: parseFloat(j.format.duration) };
+}
+
+/** Hard-cut edit: full window between beats, punch-in crop (image ≈ 85% of
+ * frame height, page context kept as margin) during each beat. All times are
+ * wall-clock anchored to recording start = stopWall − raw duration. */
+function encode({ WIN: win, inner, markers: marks, beats: takeBeats, stopWall }) {
+  const raw = ffprobeRaw();
+  const recStart = stopWall - raw.dur * 1000;
+  const A = Math.max(0, (marks.scene1 - recStart) / 1000 - 1.0);
+  const B = Math.min(raw.dur, (marks.end - recStart) / 1000 + 1.0);
+  const sc = raw.w / win.width;         // capture scale (2 on Retina)
+  const chromeH = win.height - inner.h; // tab strip + toolbar, in CSS px
+  const OUT_W = 1280;
+  const OUT_H = 840;
+  const even = (n) => 2 * Math.round(n / 2);
+
+  const segs = [];
+  let t = A;
+  for (const b of takeBeats) {
+    const bi = Math.max(A, Math.min(B, (b.in - recStart) / 1000));
+    const bo = Math.max(A, Math.min(B, (b.out - recStart) / 1000));
+    if (bo - bi < 0.5) continue; // pre-recording warm-up clamps to zero length
+    if (bi - t > 0.05) segs.push({ start: t, end: bi });
+    segs.push({ start: bi, end: bo, rect: b.rect });
+    t = bo;
+  }
+  if (B - t > 0.05) segs.push({ start: t, end: B });
+
+  const chains = segs.map((s, i) => {
+    let chain = `[i${i}]trim=start=${s.start.toFixed(3)}:end=${s.end.toFixed(3)},` +
+      'setpts=PTS-STARTPTS';
+    if (s.rect) {
+      const r = s.rect;
+      let ch = r.h * 1.18 * sc;   // ~9% page context above/below the image
+      let cw = ch * (OUT_W / OUT_H);
+      if (cw < r.w * 1.08 * sc) { // wide tiles: fit width instead
+        cw = r.w * 1.08 * sc;
+        ch = cw * (OUT_H / OUT_W);
+      }
+      const fit = Math.min(1, raw.w / cw, raw.h / ch);
+      cw *= fit;
+      ch *= fit;
+      const cx = Math.max(0, Math.min(raw.w - cw, (r.x + r.w / 2) * sc - cw / 2));
+      const cy = Math.max(0, Math.min(raw.h - ch, (chromeH + r.y + r.h / 2) * sc - ch / 2));
+      chain += `,crop=${even(cw)}:${even(ch)}:${even(cx)}:${even(cy)}`;
+    }
+    chain += `,scale=${OUT_W}:${OUT_H}:flags=lanczos[s${i}]`;
+    return chain;
+  });
+  const graph =
+    `[0:v]split=${segs.length}${segs.map((_, i) => `[i${i}]`).join('')};` +
+    chains.join(';') + ';' +
+    segs.map((_, i) => `[s${i}]`).join('') +
+    `concat=n=${segs.length}:v=1:a=0,fps=60[v]`;
+
+  console.log(`raw ${raw.dur.toFixed(1)}s, cut ${A.toFixed(1)} → ${B.toFixed(1)}, ` +
+    `${segs.length} segments (${segs.filter((s) => s.rect).length} punch-ins)`);
+  execFileSync('ffmpeg', [
+    '-y', '-i', rawMov, '-filter_complex', graph, '-map', '[v]',
+    '-c:v', 'libx264', '-crf', '19', '-pix_fmt', 'yuv420p',
+    '-movflags', '+faststart', '-an', outMp4,
+  ], { stdio: 'inherit' });
+  console.log(`RECORD_RESULT ${outMp4} (${(B - A).toFixed(1)}s)`);
+}
+
+if (encodeOnly) {
+  if (!existsSync(takeJson)) {
+    console.error(`no take file: ${takeJson} — record a take first`);
+    process.exit(2);
+  }
+  encode(JSON.parse(readFileSync(takeJson, 'utf8')));
+  process.exit(0);
+}
 
 // --- main -------------------------------------------------------------------
 
@@ -258,6 +358,7 @@ try {
       '-v', '-x', `-R${WIN.left},${WIN.top},${WIN.width},${WIN.height}`, rawMov,
     ], { stdio: ['pipe', 'inherit', 'inherit'] });
     await sleep(4000); // capture can start late; markers anchor the trim
+    beats.length = 0; // drop the warm-up beat — it happened off camera
   }
 
   // Scene 1 — Wikipedia article, lead image (Albert Einstein: the 1947
@@ -311,26 +412,17 @@ try {
     process.exit(0);
   }
   await sleep(1200);
+  // The punch-in mapping needs the browser-chrome height (window height −
+  // viewport height) — measure it from the live page before closing.
+  const inner = JSON.parse(await evalIn(cdp, pageSession,
+    'JSON.stringify({ w: innerWidth, h: innerHeight })'));
   rec.kill('SIGINT');
   await new Promise((r) => rec.on('exit', r));
   const stopWall = Date.now();
 
-  // Anchor: recording start = stop − duration; cut scene1 − 1 s → end + 1 s.
-  const dur = parseFloat(execFileSync('ffprobe', [
-    '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', rawMov,
-  ]).toString());
-  const recStart = stopWall - dur * 1000;
-  const cutIn = Math.max(0, (markers.scene1 - recStart) / 1000 - 1.0);
-  const cutOut = (markers.end - recStart) / 1000 + 1.0;
-  console.log(`raw ${dur.toFixed(1)}s, cut ${cutIn.toFixed(1)} → ${cutOut.toFixed(1)}`);
-
-  execFileSync('ffmpeg', [
-    '-y', '-i', rawMov, '-ss', String(cutIn), '-to', String(cutOut),
-    '-vf', 'scale=1280:-2:flags=lanczos,fps=60',
-    '-c:v', 'libx264', '-crf', '19', '-pix_fmt', 'yuv420p',
-    '-movflags', '+faststart', '-an', outMp4,
-  ], { stdio: 'inherit' });
-  console.log(`RECORD_RESULT ${outMp4} (${(cutOut - cutIn).toFixed(1)}s)`);
+  const take = { WIN, inner, markers, beats, stopWall };
+  writeFileSync(takeJson, JSON.stringify(take, null, 2));
+  encode(take);
   clearTimeout(watchdog);
   await cdp.send('Browser.close').catch(() => {});
   process.exit(0);
