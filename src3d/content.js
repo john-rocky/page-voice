@@ -100,14 +100,21 @@ function fitRect(img) {
 
 /** The image under the cursor. Sites layer hover chrome (links, gradients,
  * "save" buttons) over their photos, so the event target is rarely the <img>
- * itself — dig through the top few hit-test layers instead. */
+ * itself — and the img may not hit-test at all (x.com's tweet pages cover
+ * media with an inset-0 <a> and the img never appears in elementsFromPoint).
+ * Dig each of the top hit-test layers' subtrees for an eligible img that
+ * covers the point instead. */
 function imageAtPoint(x, y) {
   const stack = document.elementsFromPoint(x, y);
   for (const el of stack.slice(0, 6)) {
     if (el instanceof HTMLImageElement) return eligible(el) ? el : null;
-    // img styled under a positioned wrapper: check direct children too
-    const child = el.firstElementChild;
-    if (child instanceof HTMLImageElement && eligible(child)) return child;
+    let scanned = 0;
+    for (const img of el.querySelectorAll('img')) {
+      if (++scanned > 20) break; // container layers can hold a whole feed
+      if (!eligible(img)) continue;
+      const r = img.getBoundingClientRect();
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return img;
+    }
   }
   return null;
 }
