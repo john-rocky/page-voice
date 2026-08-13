@@ -196,14 +196,15 @@ try {
   };
   await raise();
 
-  // Pre-pass (not recorded): accept the Pexels cookie banner once, warm both
-  // pages' CDN caches, and warm the depth engine + shader.
+  // Pre-pass (not recorded): accept the Pexels cookie banner once, warm all
+  // three pages' CDN caches, and warm the depth engine + shader.
   await nav('https://www.pexels.com/search/landscape/', 4000);
   await evalIn(cdp, pageSession,
     `[...document.querySelectorAll('button')]
        .find((b) => /accept all/i.test(b.textContent))?.click(), null`);
   await sleep(800);
-  await nav('https://en.wikipedia.org/wiki/Mona_Lisa', 3500);
+  await nav('https://www.pexels.com/search/portrait/', 4000);
+  await nav('https://en.wikipedia.org/wiki/Albert_Einstein', 3500);
   // The warm hover is what absorbs the first-run GPU warm-up (~5 s) and
   // caches the depth result — wait for the image, don't skip.
   let warm = null;
@@ -227,9 +228,10 @@ try {
     await sleep(4000); // capture can start late; markers anchor the trim
   }
 
-  // Scene 1 — Wikipedia article, lead image (Mona Lisa: public domain —
-  // no ShareAlike entanglement in the published video).
-  await nav('https://en.wikipedia.org/wiki/Mona_Lisa', 2500);
+  // Scene 1 — Wikipedia article, lead image (Albert Einstein: the 1947
+  // Orren Jack Turner portrait, public domain — copyright not renewed, per
+  // its Commons file page — so no ShareAlike entanglement in the video).
+  await nav('https://en.wikipedia.org/wiki/Albert_Einstein', 2500);
   await move(640, 40);
   mark('scene1');
   await evalIn(cdp, pageSession, `scrollTo({ top: 120, behavior: 'smooth' }), null`);
@@ -240,27 +242,32 @@ try {
   step(`engine runs after scene1: ${await engineRuns()}`);
   mark('scene1end');
 
-  // Scene 3 — Pexels masonry grid, three photos in a row. Scroll past the
-  // header (and the sponsor tile that sits in the first rows), let the
-  // lazy-loaded images land, then pick the three biggest fully-visible ones.
-  await nav('https://www.pexels.com/search/landscape/', 3000);
-  await evalIn(cdp, pageSession, `scrollTo({ top: 900, behavior: 'smooth' }), null`);
-  await sleep(2500);
-  await move(640, 20);
-  mark('scene3');
-  const grids = JSON.parse(await evalIn(cdp, pageSession, `(() => {
-    const rs = [...document.images]
-      .filter((i) => i.complete && i.naturalWidth > 100)
-      .map((i) => i.getBoundingClientRect())
-      .filter((r) => r.top > 20 && r.bottom < innerHeight && r.width >= 200 && r.height >= 160)
-      .sort((a, b) => b.width * b.height - a.width * a.height)
-      .slice(0, 3)
-      .sort((a, b) => a.left - b.left)
-      .map((r) => ({ x: r.left, y: r.top, w: r.width, h: r.height }));
-    return JSON.stringify(rs);
-  })()`));
-  step(`pexels grid picks: ${grids.length}`);
-  for (const g of grids) await feature(g, 3400);
+  // Scenes 2 & 3 — Pexels masonry grids (Pexels License, no attribution
+  // required). Scroll past the header (and the sponsor tile that sits in
+  // the first rows), let the lazy-loaded images land, then feature the
+  // `count` biggest fully-visible photos.
+  const pexelsScene = async (term, count, markName) => {
+    await nav(`https://www.pexels.com/search/${term}/`, 3000);
+    await evalIn(cdp, pageSession, `scrollTo({ top: 900, behavior: 'smooth' }), null`);
+    await sleep(2500);
+    await move(640, 20);
+    mark(markName);
+    const grids = JSON.parse(await evalIn(cdp, pageSession, `(() => {
+      const rs = [...document.images]
+        .filter((i) => i.complete && i.naturalWidth > 100)
+        .map((i) => i.getBoundingClientRect())
+        .filter((r) => r.top > 20 && r.bottom < innerHeight && r.width >= 200 && r.height >= 160)
+        .sort((a, b) => b.width * b.height - a.width * a.height)
+        .slice(0, ${count})
+        .sort((a, b) => a.left - b.left)
+        .map((r) => ({ x: r.left, y: r.top, w: r.width, h: r.height }));
+      return JSON.stringify(rs);
+    })()`));
+    step(`pexels ${term} picks: ${grids.length}`);
+    for (const g of grids) await feature(g, 3400);
+  };
+  await pexelsScene('portrait', 2, 'scene2');
+  await pexelsScene('landscape', 2, 'scene3');
   mark('end');
 
   if (dry) {

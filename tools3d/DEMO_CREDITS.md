@@ -2,10 +2,11 @@
 
 Photos shown in the Page 3D demo video:
 
-- "Portrait of a red fox in Rautas fjällurskog (cropped)" by ClaudiaTen,
-  Wikimedia Commons, CC BY-SA 4.0 —
-  https://commons.wikimedia.org/wiki/File:Portrait_of_a_red_fox_in_Rautas_fj%C3%A4llurskog_(cropped).jpg
-  (shown as the lead image of the English Wikipedia "Red fox" article)
-- Photos on the Pexels search page are shown as served by pexels.com; the
-  Pexels License permits use without attribution. Hovered photos include
-  works by Shuaizhi Tian and Christopher Moon.
+- "Albert Einstein" by Orren Jack Turner, 1947, via Wikimedia Commons —
+  public domain (published in the US in 1947, copyright not renewed) —
+  https://commons.wikimedia.org/wiki/File:Albert_Einstein_Head_cleaned.jpg
+  (shown as the lead image of the English Wikipedia "Albert Einstein" article)
+- Photos on the Pexels search pages ("portrait" and "landscape") are shown as
+  served by pexels.com; the Pexels License permits use without attribution.
+  Hovered photos include works by Pete Miller Portraits, Shuaizhi Tian, and
+  Christopher Moon.
