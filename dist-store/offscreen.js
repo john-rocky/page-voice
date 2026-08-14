@@ -1556,11 +1556,9 @@
   }
   async function boot() {
     try {
-      let coi = globalThis.crossOriginIsolated, attempts = [
-        { threads: coi, jspi: !0 },
-        { threads: coi, jspi: !1 },
-        { threads: !1, jspi: !0 },
-        { threads: !1, jspi: !1 }
+      let attempts = [
+        { threads: globalThis.crossOriginIsolated },
+        { threads: !1 }
       ], loaded = !1, lastErr = null;
       for (let opts of attempts)
         try {

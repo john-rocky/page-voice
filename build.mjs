@@ -18,7 +18,7 @@
  * offscreen.html.
  */
 import { build } from 'esbuild';
-import { cpSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 
 const store = process.argv.includes('--store');
 const three = process.argv.includes('--3d');
@@ -59,7 +59,18 @@ await build({
 });
 
 cpSync(pub, outdir, { recursive: true });
-cpSync('node_modules/@litertjs/core/wasm', `${outdir}/litert-wasm`, { recursive: true });
+// LiteRT.js picks a wasm variant as: !relaxedSimd → compat, threads →
+// threaded, jspi → jspi, else → plain. Chrome 128+ (our minimum) always has
+// relaxed SIMD, and `threads` and `jspi` are mutually exclusive — we always
+// ask for threads — so compat and jspi can never be selected. Shipping all
+// four put 37 MB in the package to use 18 MB of it.
+const WASM_VARIANTS = ['litert_wasm_internal', 'litert_wasm_threaded_internal'];
+mkdirSync(`${outdir}/litert-wasm`, { recursive: true });
+for (const v of WASM_VARIANTS) {
+  for (const ext of ['js', 'wasm']) {
+    cpSync(`node_modules/@litertjs/core/wasm/${v}.${ext}`, `${outdir}/litert-wasm/${v}.${ext}`);
+  }
+}
 
 if (store) {
   const manifest = JSON.parse(readFileSync(`${outdir}/manifest.json`, 'utf8'));

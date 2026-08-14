@@ -122,11 +122,13 @@ async function fetchCached(url, onProgress) {
 async function boot() {
   try {
     const coi = globalThis.crossOriginIsolated;
+    // `threads` and `jspi` are mutually exclusive in LiteRT.js — asking for
+    // both throws, so the old first attempt failed on every cross-origin
+    // isolated page and we silently fell through to the second. Threads are
+    // what this workload wants, so ask for exactly that, then plain wasm.
     const attempts = [
-      { threads: coi, jspi: true },
-      { threads: coi, jspi: false },
-      { threads: false, jspi: true },
-      { threads: false, jspi: false },
+      { threads: coi },
+      { threads: false },
     ];
     let loaded = false;
     let lastErr = null;
