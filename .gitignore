@@ -1,7 +1,10 @@
 node_modules/
 dist/
 dist3d/
+dist-ocr/
+dist-store/
 out/
 out3d/
+out-ocr/
 *.wav
 .DS_Store
