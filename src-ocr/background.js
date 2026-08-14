@@ -87,13 +87,21 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   }
 });
 
+// --- keyboard command ------------------------------------------------------------
+
+chrome.commands?.onCommand.addListener(async (command) => {
+  if (command !== 'toggle-find') return;
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab?.id) chrome.tabs.sendMessage(tab.id, { type: 'toggle-find' }).catch(() => {});
+});
+
 // --- message router --------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg || msg.target !== 'bg') return;
   switch (msg.type) {
     case 'ocr':
-      sendToOffscreen({ type: 'ocr', url: msg.url })
+      sendToOffscreen({ type: 'ocr', url: msg.url, background: msg.background })
         .then((r) => sendResponse(r ?? { ok: false, error: 'engine unreachable' }));
       return true;
     case 'fetch-image':

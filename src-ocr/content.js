@@ -1,13 +1,17 @@
 /**
- * Content script (all pages): right-click an image → "Select text in this
- * image" → the engine reads it → a transparent text layer is positioned over
- * the image so the text can be selected and copied natively (PDF.js-style:
- * invisible glyphs, visible ::selection).
+ * Content script (all pages). Two features over the same OCR engine:
+ *   right-click an image → a transparent, selectable text layer over it
+ *     (PDF.js-style: invisible glyphs, visible ::selection), and
+ *   Alt+Shift+F → find-in-images, which indexes the page's images in the
+ *     background and highlights the lines that match (see find.js).
  *
  * The overlay is absolutely positioned in page coordinates so it scrolls
  * with the content. Line boxes flash briefly on build so the user sees what
  * was found, then fade to invisible; a small toolbar offers Copy all / close.
  */
+
+import { groupLines } from './ocr-pipeline.js';
+import { closeFind, initFind, scan, toggleFind, __findDebug } from './find.js';
 
 const FLASH_MS = 900;
 const CACHE_ENTRIES = 12;
@@ -81,6 +85,7 @@ function fitRect(img) {
 // --- activation ----------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((msg) => {
+  if (msg?.type === 'toggle-find') { toggleFind(); return; }
   if (msg?.type === 'activate-ocr' && msg.srcUrl) {
     const img = [...document.images].find(
       (i) => i.currentSrc === msg.srcUrl || i.src === msg.srcUrl,
@@ -176,24 +181,10 @@ function flashMessage(img, text) {
 // --- overlay -------------------------------------------------------------------------
 
 const JA_RE = /[぀-ヿ㐀-䶿一-鿿]/;
-const CJK_EDGE = /[぀-ヿ㐀-䶿一-鿿。、!?」』)]$|^[぀-ヿ㐀-䶿一-鿿「『(]/;
 
-/** Rec windows that split one detected line share a group id: join those
- * without a newline — spaceless for CJK boundaries, single space otherwise. */
+/** Copy joins the rec windows back into logical lines (see groupLines). */
 function joinLines(lines) {
-  const out = [];
-  let prevGroup = null;
-  for (const line of lines) {
-    if (line.group != null && line.group === prevGroup && out.length) {
-      const sep = CJK_EDGE.test(out[out.length - 1].slice(-1)) || CJK_EDGE.test(line.text[0])
-        ? '' : ' ';
-      out[out.length - 1] += sep + line.text;
-    } else {
-      out.push(line.text);
-    }
-    prevGroup = line.group ?? null;
-  }
-  return out.join('\n');
+  return groupLines(lines).map((g) => g.text).join('\n');
 }
 
 function buildOverlay(img, payload) {
@@ -307,6 +298,16 @@ window.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') teardown();
 }, true);
 
+initFind({ send, sourceFor, fitRect });
+// The commands API shortcut is the main entry point; this fallback catches
+// pages where the browser-level shortcut is taken by the site.
+window.addEventListener('keydown', (event) => {
+  if (event.altKey && event.shiftKey && (event.key === 'F' || event.key === 'f')) {
+    event.preventDefault();
+    toggleFind();
+  }
+}, true);
+
 // debug hook for automated tests
 if (__DEV__) {
   window.__ptContent = {
@@ -320,5 +321,9 @@ if (__DEV__) {
         ? { lines: session.host.querySelectorAll('span').length - 0 }
         : null;
     },
+    find: __findDebug,
+    toggleFind,
+    closeFind,
+    scan,
   };
 }

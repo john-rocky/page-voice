@@ -58,7 +58,7 @@ const resultCache = new Map(); // url → payload (LRU, CACHE_ENTRIES)
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg || msg.target !== 'offscreen') return;
   if (msg.type === 'ocr') {
-    requestOcr(msg.url).then(sendResponse);
+    requestOcr(msg.url, { background: Boolean(msg.background) }).then(sendResponse);
     return true;
   }
   if (msg.type === 'status') {
@@ -321,6 +321,13 @@ async function runOcr(url, { forceRelay = false } = {}) {
     resultCache.set(url, cached); // LRU refresh
     return cached;
   }
+  if (!forceRelay) {
+    const stored = await dbGet(url);
+    if (stored) {
+      resultCache.set(url, stored);
+      return stored;
+    }
+  }
 
   const { bytes, via, fetchMs } = await fetchImageBytes(url, { forceRelay });
   const bitmap = await createImageBitmap(new Blob([bytes]), { imageOrientation: 'from-image' });
@@ -396,23 +403,83 @@ async function runOcr(url, { forceRelay = false } = {}) {
   const payload = { ok: true, natural: { w: nw, h: nh }, lines, stats: { ...lastStats } };
   lastResult = payload;
   resultCache.set(url, payload);
+  dbPut(url, payload);
   if (resultCache.size > CACHE_ENTRIES) {
     resultCache.delete(resultCache.keys().next().value);
   }
   return payload;
 }
 
+// --- persistent result cache -------------------------------------------------------
+
+const DB_NAME = 'pagetext-index';
+const STORE = 'reads';
+let dbPromise = null;
+
+function openDb() {
+  dbPromise ??= new Promise((resolve) => {
+    let req;
+    try {
+      req = indexedDB.open(DB_NAME, 1);
+    } catch {
+      resolve(null);
+      return;
+    }
+    req.onupgradeneeded = () => req.result.createObjectStore(STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => resolve(null);
+  });
+  return dbPromise;
+}
+
+async function dbGet(url) {
+  const db = await openDb();
+  if (!db) return null;
+  return new Promise((resolve) => {
+    const req = db.transaction(STORE, 'readonly').objectStore(STORE).get(url);
+    req.onsuccess = () => resolve(req.result ?? null);
+    req.onerror = () => resolve(null);
+  });
+}
+
+async function dbPut(url, payload) {
+  const db = await openDb();
+  if (!db) return;
+  try {
+    db.transaction(STORE, 'readwrite').objectStore(STORE).put(payload, url);
+  } catch { /* quota or closed db — the memory LRU still covers this session */ }
+}
+
 // --- request queue ----------------------------------------------------------------
 
-let chain = Promise.resolve();
+// Interactive reads (a right-click) must not wait behind a page's worth of
+// background indexing, so the queue has two lanes and background work only
+// runs when the foreground lane is empty.
+const lanes = { fg: [], bg: [] };
+let pumping = false;
 
-function requestOcr(url, opts) {
-  const run = chain.then(() => runOcr(url, opts)).catch((err) => ({
-    ok: false,
-    error: String(err instanceof Error ? err.message : err),
-  }));
-  chain = run.then(() => {});
-  return run;
+function requestOcr(url, opts = {}) {
+  return new Promise((resolve) => {
+    lanes[opts.background ? 'bg' : 'fg'].push({ url, opts, resolve });
+    pump();
+  });
+}
+
+async function pump() {
+  if (pumping) return;
+  pumping = true;
+  for (;;) {
+    const job = lanes.fg.shift() ?? lanes.bg.shift();
+    if (!job) break;
+    let out;
+    try {
+      out = await runOcr(job.url, job.opts);
+    } catch (err) {
+      out = { ok: false, error: String(err instanceof Error ? err.message : err) };
+    }
+    job.resolve(out);
+  }
+  pumping = false;
 }
 
 // debug/smoke hook: lets CDP automation poll engine state and run OCR

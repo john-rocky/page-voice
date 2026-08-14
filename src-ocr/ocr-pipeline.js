@@ -379,3 +379,30 @@ export function buildCharTable(dictText) {
   if (lines[lines.length - 1] === '') lines.pop();
   return ['', ...lines, ' '];
 }
+
+const CJK_EDGE = /[぀-ヿ㐀-䶿一-鿿。、!?」』)]$|^[぀-ヿ㐀-䶿一-鿿「『(]/;
+
+/**
+ * Rec windows that split one detected line share a group id. Merge them back
+ * into logical lines: search and copy both need the whole line, because a
+ * phrase can straddle a window boundary ("power outlets" split as
+ * "has 8 power" + "outlets for 20 people"). Returns [{text, pieces}] where
+ * pieces keep their own rects for highlighting.
+ */
+export function groupLines(lines) {
+  const out = [];
+  let prev = null;
+  for (const line of lines) {
+    const same = line.group != null && line.group === prev && out.length;
+    if (same) {
+      const g = out[out.length - 1];
+      const sep = CJK_EDGE.test(g.text.slice(-1)) || CJK_EDGE.test(line.text[0]) ? '' : ' ';
+      g.text += sep + line.text;
+      g.pieces.push(line);
+    } else {
+      out.push({ text: line.text, pieces: [line] });
+    }
+    prev = line.group ?? null;
+  }
+  return out;
+}

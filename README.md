@@ -12,9 +12,9 @@ Second effect (WIP): **Page 3D** — hover any photo to see it in 3D
 (MoGe-2 depth → plane-mesh parallax). Build with `node build.mjs --3d`
 → `dist3d/`; smoke/E2E tests live in `tools3d/`.
 Third effect (WIP): **Page Text** — right-click any image to select and
-copy the text inside it (PP-OCRv5, Japanese and English). Build with
-`node build.mjs --ocr` → `dist-ocr/`; tests live in `tools-ocr/`. See
-[Page Text](#page-text) below.
+copy the text inside it, and **Alt+Shift+F to search inside images**
+(PP-OCRv5, Japanese and English). Build with `node build.mjs --ocr` →
+`dist-ocr/`; tests live in `tools-ocr/`. See [Page Text](#page-text) below.
 
 - Select text on any page → right-click → *Read aloud* (or Alt+R).
 - On ChatGPT / Claude / Gemini, toggle *Auto-read* in the HUD (bottom-right):
@@ -62,6 +62,14 @@ WASM), JSPI unavailable (falls back cleanly); RTF 0.35 warm / 0.63 cold at
 
 ## Page Text
 
+**Find in images (Alt+Shift+F).** The browser's own Cmd+F cannot see inside a
+screenshot. This indexes the page's images in the background as you scroll —
+queued behind any interactive read, one at a time, cached by image URL in
+IndexedDB so scrolling back is free — then highlights the lines that match.
+Searching happens over *logical* lines: a rec window splits "…has 8 power" /
+"outlets for 20 people…", so matches are found on the merged text and the
+highlight is drawn as one box per line.
+
 Right-click an image → *Select text in this image*. The offscreen document
 reads it with [PP-OCRv5](https://huggingface.co/litert-community/PP-OCRv5-LiteRT)
 and the content script lays a transparent, selectable text layer over the
@@ -83,6 +91,7 @@ node tools-ocr/verify.mjs <chrome-binary> [--profile=<dir>]   # backend equivale
 node tools-ocr/make-fixtures.mjs <chrome-binary>              # test images
 node tools-ocr/smoke.mjs <chrome-binary> [--profile=<dir>]    # pipeline regression floor
 node tools-ocr/e2e.mjs <chrome-binary> [--profile=<dir>]      # overlay, real message path
+node tools-ocr/find-e2e.mjs <chrome-binary> [--profile=<dir>] # index + search over a mock feed
 ```
 
 Pass a persistent `--profile` dir: in a throwaway profile the freshly
