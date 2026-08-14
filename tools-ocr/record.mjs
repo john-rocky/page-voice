@@ -105,7 +105,7 @@ async function glide(x, y, ms) {
  * "Inspect", which is what silently broke the second beat of a take. Count
  * down from the top and clear the selection first. cliclick moves the REAL
  * cursor; the in-page dot follows via pointermove. */
-async function menuPick(pageX, pageY) {
+async function menuPick(pageX, pageY, onCommit) {
   const sx = Math.round(WIN.left + pageX);
   const sy = Math.round(WIN.top + chromeH + pageY);
   await evalIn(cdp, pageSession, 'getSelection().removeAllRanges(), null').catch(() => {});
@@ -122,6 +122,7 @@ async function menuPick(pageX, pageY) {
   // ignores it.
   execFileSync('cliclick', ['-w', '150',
     ...Array(6).fill('kp:arrow-down'), 'kp:return']);
+  onCommit?.(); // the pick is committed: everything after this is the model
 }
 
 /** --dry activation: same content-script path, minus the native menu.
@@ -234,14 +235,17 @@ async function featureShot(imgSel, base, selFrom, selTo) {
   })()`));
   const cx = rect.x + rect.w / 2;
   const cy = rect.y + rect.h * 0.42;
-  await glide(cx, cy, 550);
-  await sleep(250);
+  await glide(cx, cy, 380);
+  await sleep(120);
+  // Sub-beat marks let the encode keep the model's own latency at 1x while
+  // compressing the parts that are just UI choreography.
   const beat = { in: Date.now(), rect: { x: rect.x, y: rect.y, w: rect.w, h: rect.h } };
 
   if (dry) {
+    beat.ocrIn = Date.now();
     await simActivate(base, rect.src);
   } else {
-    await menuPick(cx, cy);
+    await menuPick(cx, cy, () => { beat.ocrIn = Date.now(); });
   }
   let info = null;
   const until = Date.now() + 10000;
@@ -250,11 +254,12 @@ async function featureShot(imgSel, base, selFrom, selTo) {
     if (info) break;
     await sleep(200);
   }
+  beat.ocrOut = Date.now();
   step(`overlay: ${info ? `${info.spans} spans` : 'NONE'}`);
   if (!info) { beats.push(beat); return; }
-  await sleep(1400); // boxes flash, then fade — let it read
+  await sleep(850); // boxes flash, then fade — let it read
   await dragSelect(selFrom, selTo);
-  await sleep(700); // selection highlight holds
+  await sleep(420); // selection highlight holds
   if (info.copyBtn) {
     if (dry) {
       const pre = await evalIn(cdp, pageSession, `(() => {
@@ -269,7 +274,7 @@ async function featureShot(imgSel, base, selFrom, selTo) {
       step(`pre-click @${Math.round(info.copyBtn.x)},${Math.round(info.copyBtn.y)}: ${pre}`);
     }
     await clickAt(info.copyBtn.x, info.copyBtn.y);
-    await sleep(400);
+    await sleep(300);
     // The label is on camera — a failed clipboard write would read
     // "Copy failed" in the take, so check it during --dry too.
     // Match the copied state too: the label becomes "Copied ✓", which does
@@ -281,7 +286,7 @@ async function featureShot(imgSel, base, selFrom, selTo) {
       return b ? b.textContent : 'button gone';
     })()`);
     step(`copy button: "${label}"`);
-    await sleep(700); // "Copied ✓" holds on screen
+    await sleep(520); // "Copied ✓" holds on screen
   }
   beat.out = Date.now();
   beats.push(beat);
@@ -290,12 +295,20 @@ async function featureShot(imgSel, base, selFrom, selTo) {
     await cdp.send('Input.dispatchKeyEvent',
       { type, key: 'Escape', windowsVirtualKeyCode: 27 }, pageSession);
   }
-  await sleep(300);
+  await sleep(200);
 }
 
 // --- punch-in encode (same contract as tools3d) --------------------------------
 
-const WIDE_SPEED = 3;
+// Between beats (scrolls, cursor travel) — pure dead time.
+const WIDE_SPEED = 4;
+// Inside a beat: opening the menu and picking the item, then the selecting
+// and copying afterwards, are UI choreography and get compressed. The span
+// between committing the menu pick and the text appearing is the model's
+// own latency and always plays at 1x — speeding that up would misstate how
+// fast the OCR is.
+const MENU_SPEED = 2;
+const INTERACT_SPEED = 1.7;
 
 function ffprobeRaw() {
   const j = JSON.parse(execFileSync('ffprobe', [
@@ -318,21 +331,32 @@ function encode({ WIN: win, inner, markers: marks, beats: takeBeats, stopWall })
   const even = (n) => 2 * Math.round(n / 2);
 
   const segs = [];
+  const clamp = (ms) => Math.max(A, Math.min(B, (ms - recStart) / 1000));
   let t = A;
   for (const b of takeBeats) {
     if (!b.out) continue;
-    const bi = Math.max(A, Math.min(B, (b.in - recStart) / 1000));
-    const bo = Math.max(A, Math.min(B, (b.out - recStart) / 1000));
+    const bi = clamp(b.in);
+    const bo = clamp(b.out);
     if (bo - bi < 0.5) continue;
     if (bi - t > 0.05) segs.push({ start: t, end: bi });
-    segs.push({ start: bi, end: bo, rect: b.rect });
+    // Older takes have no sub-beat marks — fall back to one 1x block.
+    const oi = b.ocrIn ? clamp(b.ocrIn) : null;
+    const oo = b.ocrOut ? clamp(b.ocrOut) : null;
+    if (oi !== null && oo !== null && oo > oi && oi > bi && oo < bo) {
+      segs.push({ start: bi, end: oi, rect: b.rect, speed: MENU_SPEED });
+      segs.push({ start: oi, end: oo, rect: b.rect, speed: 1 });
+      segs.push({ start: oo, end: bo, rect: b.rect, speed: INTERACT_SPEED });
+    } else {
+      segs.push({ start: bi, end: bo, rect: b.rect, speed: 1 });
+    }
     t = bo;
   }
   if (B - t > 0.05) segs.push({ start: t, end: B });
 
   const chains = segs.map((s, i) => {
+    const speed = s.rect ? (s.speed ?? 1) : WIDE_SPEED;
     let chain = `[i${i}]trim=start=${s.start.toFixed(3)}:end=${s.end.toFixed(3)},` +
-      (s.rect ? 'setpts=PTS-STARTPTS' : `setpts=(PTS-STARTPTS)/${WIDE_SPEED}`);
+      (speed === 1 ? 'setpts=PTS-STARTPTS' : `setpts=(PTS-STARTPTS)/${speed}`);
     if (s.rect) {
       const r = s.rect;
       let ch = r.h * 1.18 * sc;
@@ -358,14 +382,15 @@ function encode({ WIN: win, inner, markers: marks, beats: takeBeats, stopWall })
     `concat=n=${segs.length}:v=1:a=0,fps=60[v]`;
 
   console.log(`raw ${raw.dur.toFixed(1)}s, cut ${A.toFixed(1)} → ${B.toFixed(1)}, ` +
-    `${segs.length} segments (${segs.filter((s) => s.rect).length} punch-ins)`);
+    `${segs.length} segments (${segs.filter((s) => s.rect).length} punch-ins, ` +
+    `${segs.filter((s) => s.rect && (s.speed ?? 1) === 1).length} at 1x)`);
   execFileSync('ffmpeg', [
     '-y', '-i', rawMov, '-filter_complex', graph, '-map', '[v]',
     '-c:v', 'libx264', '-crf', '19', '-pix_fmt', 'yuv420p',
     '-movflags', '+faststart', '-an', outMp4,
   ], { stdio: 'inherit' });
   const outDur = segs.reduce(
-    (sum, s) => sum + (s.end - s.start) / (s.rect ? 1 : WIDE_SPEED), 0);
+    (sum, s) => sum + (s.end - s.start) / (s.rect ? (s.speed ?? 1) : WIDE_SPEED), 0);
   console.log(`RECORD_RESULT ${outMp4} (${outDur.toFixed(1)}s)`);
 }
 
@@ -506,13 +531,13 @@ try {
   await sleep(600);
   await evalIn(cdp, pageSession,
     `document.querySelector('#post-a').scrollIntoView({ block: 'center', behavior: 'smooth' }), null`);
-  await sleep(1400);
+  await sleep(900);
   await featureShot('#shot-a', base, 'Notes for', 'power outlets');
 
   // Scene 2 — the second screenshot post.
   await evalIn(cdp, pageSession,
     `document.querySelector('#post-b').scrollIntoView({ block: 'center', behavior: 'smooth' }), null`);
-  await sleep(1400);
+  await sleep(900);
   await featureShot('#shot-b', base, 'Screenshots', 'copyable');
   mark('end');
 
