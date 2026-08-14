@@ -143,6 +143,7 @@ function teardown() {
   const s = session;
   if (!s) return;
   session = null;
+  clearTimeout(s.resizeTimer);
   s.host.remove();
   window.removeEventListener('resize', s.onResize);
   document.removeEventListener('pointerdown', s.onPointerDown, true);
@@ -187,7 +188,7 @@ function joinLines(lines) {
   return groupLines(lines).map((g) => g.text).join('\n');
 }
 
-function buildOverlay(img, payload) {
+function buildOverlay(img, payload, { flash = true } = {}) {
   const { left, top, width, height, uv } = fitRect(img);
   const host = document.createElement('div');
   host.setAttribute('data-pagetext', '');
@@ -280,18 +281,39 @@ function buildOverlay(img, payload) {
   bar.append(copyBtn, closeBtn);
   host.appendChild(bar);
 
-  // flash the boxes, then fade them out (text stays selectable)
-  requestAnimationFrame(() => {
+  // flash the boxes, then fade them out (text stays selectable). A rebuild
+  // after a resize skips the flash — it already played once.
+  if (flash) {
+    requestAnimationFrame(() => {
+      for (const el of host.querySelectorAll('.pt-box')) el.style.opacity = '0';
+    });
+  } else {
     for (const el of host.querySelectorAll('.pt-box')) el.style.opacity = '0';
-  });
+  }
 
-  const onResize = () => teardown();
+  // Reposition on resize rather than dropping the overlay: the text layer is
+  // pure geometry over the image, so a rebuild from the same payload follows
+  // the new layout. (Tearing down here also made the overlay vanish whenever
+  // anything resized the viewport.)
+  let resizeTimer = null;
+  const onResize = () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      if (!session || session.host !== host) return;
+      if (!img.isConnected) { teardown(); return; }
+      host.remove();
+      window.removeEventListener('resize', onResize);
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      session = null;
+      buildOverlay(img, payload, { flash: false });
+    }, 150);
+  };
   const onPointerDown = (e) => {
     if (!host.contains(e.target)) teardown();
   };
   window.addEventListener('resize', onResize);
   document.addEventListener('pointerdown', onPointerDown, true);
-  session = { host, img, onResize, onPointerDown };
+  session = { host, img, payload, onResize, onPointerDown };
 }
 
 window.addEventListener('keydown', (event) => {

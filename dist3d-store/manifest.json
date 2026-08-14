@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Page 3D",
   "description": "Hover any photo to see it in 3D. Depth runs locally on your GPU — images never leave your device.",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "minimum_chrome_version": "128",
   "permissions": [
     "offscreen",

@@ -221,7 +221,7 @@
   }
   function teardown() {
     let s = session;
-    s && (session = null, s.host.remove(), window.removeEventListener("resize", s.onResize), document.removeEventListener("pointerdown", s.onPointerDown, !0));
+    s && (session = null, clearTimeout(s.resizeTimer), s.host.remove(), window.removeEventListener("resize", s.onResize), document.removeEventListener("pointerdown", s.onPointerDown, !0));
   }
   function pill(textContent) {
     let el = document.createElement("div");
@@ -245,7 +245,7 @@
     return groupLines(lines).map((g) => g.text).join(`
 `);
   }
-  function buildOverlay(img, payload) {
+  function buildOverlay(img, payload, { flash = !0 } = {}) {
     let { left, top, width, height, uv } = fitRect(img), host = document.createElement("div");
     host.setAttribute("data-pagetext", ""), host.style.cssText = `position:absolute;left:${left + window.scrollX}px;top:${top + window.scrollY}px;width:${width}px;height:${height}px;z-index:2147483646;overflow:hidden;cursor:text;user-select:text;-webkit-user-select:text;`;
     let style = document.createElement("style");
@@ -286,15 +286,28 @@
       }
     });
     let closeBtn = mkBtn("\u2715");
-    closeBtn.addEventListener("click", (e) => {
+    if (closeBtn.addEventListener("click", (e) => {
       e.stopPropagation(), teardown();
-    }), bar.append(copyBtn, closeBtn), host.appendChild(bar), requestAnimationFrame(() => {
+    }), bar.append(copyBtn, closeBtn), host.appendChild(bar), flash)
+      requestAnimationFrame(() => {
+        for (let el of host.querySelectorAll(".pt-box")) el.style.opacity = "0";
+      });
+    else
       for (let el of host.querySelectorAll(".pt-box")) el.style.opacity = "0";
-    });
-    let onResize = () => teardown(), onPointerDown = (e) => {
+    let resizeTimer = null, onResize = () => {
+      clearTimeout(resizeTimer), resizeTimer = setTimeout(() => {
+        if (!(!session || session.host !== host)) {
+          if (!img.isConnected) {
+            teardown();
+            return;
+          }
+          host.remove(), window.removeEventListener("resize", onResize), document.removeEventListener("pointerdown", onPointerDown, !0), session = null, buildOverlay(img, payload, { flash: !1 });
+        }
+      }, 150);
+    }, onPointerDown = (e) => {
       host.contains(e.target) || teardown();
     };
-    window.addEventListener("resize", onResize), document.addEventListener("pointerdown", onPointerDown, !0), session = { host, img, onResize, onPointerDown };
+    window.addEventListener("resize", onResize), document.addEventListener("pointerdown", onPointerDown, !0), session = { host, img, payload, onResize, onPointerDown };
   }
   window.addEventListener("keydown", (event) => {
     event.key === "Escape" && teardown();

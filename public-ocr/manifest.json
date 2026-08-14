@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Page Text (dev)",
   "description": "Right-click any image to select and copy the text inside it. OCR runs in your browser — images never leave your device.",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "minimum_chrome_version": "128",
   "permissions": [
     "offscreen",
