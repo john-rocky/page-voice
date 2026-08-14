@@ -39,6 +39,40 @@ const RENDER = String(function render() {
       ],
     },
     {
+      // "Friday" recurs across three fixtures on purpose: the search demo
+      // needs one query that lights up several images at once.
+      name: 'fixture-en-ship',
+      dark: true,
+      font: '-apple-system,"Helvetica Neue",Arial,sans-serif',
+      author: 'Release notes',
+      handle: '@demo_ship · 3h',
+      lines: [
+        'Shipping on Friday, for real this time:',
+        '',
+        '- offline mode, including the editor',
+        '- the download is 40% smaller',
+        '- dark mode stops flashing white on launch',
+        '',
+        'Anything not on this list moves to next month.',
+      ],
+    },
+    {
+      name: 'fixture-en-meetup',
+      dark: false,
+      font: '-apple-system,"Helvetica Neue",Arial,sans-serif',
+      author: 'Local meetup',
+      handle: '@demo_meetup · 5h',
+      lines: [
+        'Doors open 18:30 on Friday.',
+        'Three talks, 20 minutes each, starting at 19:00.',
+        '',
+        'The room holds 40 people and we are at 31,',
+        'so there is space if you decide late.',
+        '',
+        'No food. There is coffee and a whiteboard.',
+      ],
+    },
+    {
       // Video beat 1: a generic wall of text, the kind people actually
       // screenshot — times, numbers and punctuation, nothing about OCR.
       name: 'fixture-en-dark',

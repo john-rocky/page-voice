@@ -66,6 +66,19 @@ const CURSOR_JS = `
     dot.style.top = e.clientY + 'px';
   }, true);
   window.__demoCursor = dot;
+
+  // Keycap hint: the shortcut is invisible on camera otherwise.
+  window.__demoKey = (label) => {
+    const cap = document.createElement('div');
+    cap.textContent = label;
+    cap.style.cssText = 'position:fixed;left:50%;bottom:44px;transform:translateX(-50%);' +
+      'z-index:2147483647;pointer-events:none;padding:10px 18px;border-radius:12px;' +
+      'background:rgba(20,20,24,.92);color:#fff;font:600 22px/1 -apple-system,system-ui,sans-serif;' +
+      'letter-spacing:2px;box-shadow:0 6px 24px rgba(0,0,0,.45);transition:opacity .3s;';
+    document.documentElement.appendChild(cap);
+    setTimeout(() => { cap.style.opacity = '0'; }, 1400);
+    setTimeout(() => cap.remove(), 1800);
+  };
 })();
 `;
 
@@ -220,6 +233,75 @@ async function clickAt(x, y) {
   }
 }
 
+/** Type into whatever is focused, one character at a time — instant
+ * insertText reads as a paste on camera. */
+async function typeText(text, perCharMs = 85) {
+  for (const ch of text) {
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', text: ch, key: ch }, pageSession);
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: ch }, pageSession);
+    await sleep(perCharMs);
+  }
+}
+
+async function pressKey(key, code, vk, modifiers = 0) {
+  for (const type of ['rawKeyDown', 'keyUp']) {
+    await cdp.send('Input.dispatchKeyEvent',
+      { type, key, code, windowsVirtualKeyCode: vk, modifiers }, pageSession);
+  }
+}
+
+/**
+ * Search scene: open find-in-images, type a word that appears inside several
+ * screenshots, and let the matches light up. The content script's own
+ * Alt+Shift+F listener answers synthetic keys, so this beat needs no
+ * hands-off desktop — unlike the native context menu in featureShot.
+ */
+async function findScene(query) {
+  await evalIn(cdp, pageSession, `window.__demoKey && __demoKey('⌥ ⇧ F'), null`);
+  await sleep(250);
+  await pressKey('F', 'KeyF', 70, 9); // alt(1) + shift(8)
+  await sleep(700);
+  const opened = await evalIn(cdp, pageSession,
+    'Boolean(document.querySelector("[data-pagetext-find]"))');
+  step(`find bar: ${opened ? 'open' : 'MISSING'}`);
+  if (!opened) return;
+  const beat = { in: Date.now() };
+  await typeText(query);
+  // wait for the highlights to settle
+  let hits = 0;
+  for (let i = 0; i < 20; i++) {
+    hits = await evalIn(cdp, pageSession,
+      'document.querySelectorAll("[data-pagetext-hit]").length');
+    if (hits) break;
+    await sleep(250);
+  }
+  step(`matches for "${query}": ${hits} highlight(s)`);
+  // frame the beat on the images that actually lit up
+  // Frame the highlights AND the search bar: the bar is what explains the
+  // scene, and it lives at the top-right corner of the viewport.
+  const union = JSON.parse(await evalIn(cdp, pageSession, `(() => {
+    const hits = [...document.querySelectorAll('[data-pagetext-hit]'),
+      ...document.querySelectorAll('[data-pagetext-find]')];
+    if (!hits.length) return 'null';
+    let l = 1e9, t = 1e9, r = -1e9, b = -1e9;
+    for (const h of hits) {
+      const q = h.getBoundingClientRect();
+      l = Math.min(l, q.left); t = Math.min(t, q.top);
+      r = Math.max(r, q.right); b = Math.max(b, q.bottom);
+    }
+    return JSON.stringify({ x: l, y: t, w: r - l, h: b - t });
+  })()`));
+  if (union) beat.rect = union;
+  await sleep(900);
+  await pressKey('Enter', 'Enter', 13);   // jump to the next match
+  await sleep(900);
+  await pressKey('Enter', 'Enter', 13);
+  await sleep(1100);
+  beat.out = Date.now();
+  beat.speed = 1; // typing and the matches lighting up carry this beat
+  beats.push(beat);
+}
+
 const beats = [];
 const markers = {};
 const mark = (name) => { markers[name] = Date.now(); step(`mark ${name}`); };
@@ -339,6 +421,13 @@ function encode({ WIN: win, inner, markers: marks, beats: takeBeats, stopWall })
     const bo = clamp(b.out);
     if (bo - bi < 0.5) continue;
     if (bi - t > 0.05) segs.push({ start: t, end: bi });
+    // A beat can pin its own speed (the search beat: the typing IS the
+    // content, so it plays at 1x rather than the interaction rate).
+    if (b.speed) {
+      segs.push({ start: bi, end: bo, rect: b.rect, speed: b.speed });
+      t = bo;
+      continue;
+    }
     // Older takes have no sub-beat marks — fall back to one 1x block.
     const oi = b.ocrIn ? clamp(b.ocrIn) : null;
     const oo = b.ocrOut ? clamp(b.ocrOut) : null;
@@ -534,11 +623,21 @@ try {
   await sleep(900);
   await featureShot('#shot-a', base, 'Notes for', 'power outlets');
 
-  // Scene 2 — the second screenshot post.
+  // Scene 2 — scroll through the feed, then search inside every image at once.
   await evalIn(cdp, pageSession,
-    `document.querySelector('#post-b').scrollIntoView({ block: 'center', behavior: 'smooth' }), null`);
-  await sleep(900);
-  await featureShot('#shot-b', base, 'Screenshots', 'copyable');
+    `document.querySelector('#post-c').scrollIntoView({ block: 'center', behavior: 'smooth' }), null`);
+  await sleep(1100);
+  await evalIn(cdp, pageSession,
+    `document.querySelector('#post-d').scrollIntoView({ block: 'start', behavior: 'smooth' }), null`);
+  await sleep(1400);
+  // let the background indexer finish what the scroll queued
+  for (let i = 0; i < 40; i++) {
+    const pending = await evalIn(cdp, pageSession,
+      '__ptContent ? __ptContent.find.pending : 0').catch(() => 0);
+    if (!pending) break;
+    await sleep(500);
+  }
+  await findScene('Friday');
   mark('end');
 
   if (dry) {
