@@ -77,10 +77,15 @@ let chromeH = 0; // window height − viewport height, for screen-coord mapping
 const ease = (t) => 1 - (1 - t) ** 3;
 const step = (m) => console.log(`[${new Date().toISOString().slice(11, 19)}] ${m}`);
 
-async function move(x, y) {
+async function move(x, y, dragging = false) {
   cursor.x = x;
   cursor.y = y;
-  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y }, pageSession);
+  // A drag only extends a text selection if the moves carry the pressed
+  // button — without buttons:1 Chrome treats them as hover and nothing
+  // highlights on camera.
+  await cdp.send('Input.dispatchMouseEvent', dragging
+    ? { type: 'mouseMoved', x, y, button: 'left', buttons: 1 }
+    : { type: 'mouseMoved', x, y }, pageSession);
 }
 
 async function glide(x, y, ms) {
@@ -165,15 +170,32 @@ async function dragSelect(fromText, toText) {
   const y1 = b.y + b.h / 2;
   await glide(x0, y0, 350);
   await cdp.send('Input.dispatchMouseEvent',
-    { type: 'mousePressed', x: x0, y: y0, button: 'left', clickCount: 1 }, pageSession);
+    { type: 'mousePressed', x: x0, y: y0, button: 'left', buttons: 1, clickCount: 1 }, pageSession);
   const steps = 22;
   for (let i = 1; i <= steps; i++) {
     const t = ease(i / steps);
-    await move(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t);
+    await move(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, true);
     await sleep(28);
   }
   await cdp.send('Input.dispatchMouseEvent',
     { type: 'mouseReleased', x: x1, y: y1, button: 'left', clickCount: 1 }, pageSession);
+  // Preflight signal: the selection must be non-empty AND live entirely
+  // inside the overlay. Both endpoints landing in the page instead means
+  // the span geometry is wrong (that is how the detached-measure bug
+  // showed up: spans ran ~50,000 px wide and the drag ended off-screen).
+  const sel = await evalIn(cdp, pageSession, `(() => {
+    const s = getSelection();
+    const host = document.querySelector('[data-pagetext]');
+    const inHost = (n) => Boolean(host && n
+      && host.contains(n.nodeType === 3 ? n.parentElement : n));
+    return JSON.stringify({
+      len: s.toString().length,
+      head: s.toString().slice(0, 22).replace(/\\s+/g, ' '),
+      contained: inHost(s.anchorNode) && inHost(s.focusNode),
+    });
+  })()`);
+  const { len, head, contained } = JSON.parse(sel);
+  step(`selected ${len} chars${contained ? '' : ' OUTSIDE OVERLAY'}: "${head}…"`);
 }
 
 async function clickAt(x, y) {

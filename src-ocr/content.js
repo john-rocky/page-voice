@@ -214,6 +214,11 @@ function buildOverlay(img, payload) {
     'background: rgba(77,163,255,.18); outline: 1px solid rgba(77,163,255,.55); ' +
     `transition: opacity .5s ease ${FLASH_MS}ms; }`;
   host.appendChild(style);
+  // Insert BEFORE building the spans: an element outside the document has no
+  // layout, so measuring text in a detached host returns width 0 and every
+  // span gets scaled by ~its own box width (spans ran ~50,000 px wide —
+  // invisible, since the text is transparent, but selection lands anywhere).
+  document.body.appendChild(host);
 
   // Map natural-relative coords → overlay px, honoring the uv crop (cover).
   const px = (line) => ({
@@ -284,7 +289,6 @@ function buildOverlay(img, payload) {
   bar.append(copyBtn, closeBtn);
   host.appendChild(bar);
 
-  document.body.appendChild(host);
   // flash the boxes, then fade them out (text stays selectable)
   requestAnimationFrame(() => {
     for (const el of host.querySelectorAll('.pt-box')) el.style.opacity = '0';
