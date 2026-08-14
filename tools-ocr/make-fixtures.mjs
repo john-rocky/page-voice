@@ -25,7 +25,7 @@ const RENDER = String(function render() {
       dark: true,
       font: '"Hiragino Sans","Hiragino Kaku Gothic ProN",sans-serif',
       author: 'Page Text',
-      handle: '@pagetext_dev · 2時間',
+      handle: '@demo_pagetext · 2時間',
       lines: [
         '長文を画像で貼る文化、けっこう好きなんですが、',
         'あとから「あの話どこだっけ」と検索しても絶対に',
@@ -43,7 +43,7 @@ const RENDER = String(function render() {
       dark: false,
       font: '-apple-system,"Helvetica Neue",Arial,sans-serif',
       author: 'Page Text',
-      handle: '@pagetext_dev · 2h',
+      handle: '@demo_pagetext · 2h',
       lines: [
         'Screenshots are where text goes to die.',
         '',
