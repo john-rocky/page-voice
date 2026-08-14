@@ -381,7 +381,7 @@ if (encodeOnly) {
 // --- serve the demo feed --------------------------------------------------------
 
 const MIME = { '.html': 'text/html', '.png': 'image/png' };
-for (const f of ['fixture-ja-dark.png', 'fixture-en-light.png']) {
+for (const f of ['fixture-en-dark.png', 'fixture-en-light.png']) {
   if (!existsSync(resolve(outDir, f))) {
     console.error(`missing ${f} — run tools-ocr/make-fixtures.mjs first`);
     process.exit(2);
@@ -450,7 +450,7 @@ try {
     // Reproduce the recorded sequence: both images, in order, through the
     // real native menu. A failure on the second one only means the menu
     // interaction (not the image) is what breaks on repeat.
-    for (const sel of ['#post-ja #shot-ja', '#post-en #shot-en']) {
+    for (const sel of ['#post-a #shot-a', '#post-b #shot-b']) {
       await evalIn(cdp, pageSession,
         `document.querySelector('${sel}').scrollIntoView({ block: 'center' }), null`);
       await sleep(1000);
@@ -499,21 +499,21 @@ try {
     beats.length = 0;
   }
 
-  // Scene 1 — feed scroll down to the JA screenshot post.
+  // Scene 1 — feed scroll down to the first screenshot post.
   await evalIn(cdp, pageSession, 'scrollTo({ top: 0 }), null');
   await move(640, 200);
   mark('scene1');
   await sleep(600);
   await evalIn(cdp, pageSession,
-    `document.querySelector('#post-ja').scrollIntoView({ block: 'center', behavior: 'smooth' }), null`);
+    `document.querySelector('#post-a').scrollIntoView({ block: 'center', behavior: 'smooth' }), null`);
   await sleep(1400);
-  await featureShot('#shot-ja', base, '長文を画像', 'できない');
+  await featureShot('#shot-a', base, 'Notes for', 'power outlets');
 
-  // Scene 2 — the EN screenshot post.
+  // Scene 2 — the second screenshot post.
   await evalIn(cdp, pageSession,
-    `document.querySelector('#post-en').scrollIntoView({ block: 'center', behavior: 'smooth' }), null`);
+    `document.querySelector('#post-b').scrollIntoView({ block: 'center', behavior: 'smooth' }), null`);
   await sleep(1400);
-  await featureShot('#shot-en', base, 'Screenshots', 'copyable');
+  await featureShot('#shot-b', base, 'Screenshots', 'copyable');
   mark('end');
 
   if (dry) {

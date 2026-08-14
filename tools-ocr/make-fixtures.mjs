@@ -39,6 +39,26 @@ const RENDER = String(function render() {
       ],
     },
     {
+      // Video beat 1: a generic wall of text, the kind people actually
+      // screenshot — times, numbers and punctuation, nothing about OCR.
+      name: 'fixture-en-dark',
+      dark: true,
+      font: '-apple-system,"Helvetica Neue",Arial,sans-serif',
+      author: 'Workshop notes',
+      handle: '@demo_workshop · 1h',
+      lines: [
+        'Notes for Saturday, since a few people asked:',
+        '',
+        'Bring a laptop with at least 16 GB of RAM.',
+        'We start at 10:00 and break for lunch at 12:30.',
+        'The room has 8 power outlets for 20 people, so',
+        'bring a strip if you have one.',
+        '',
+        'Slides go out on Friday — as a PDF, not a',
+        'screenshot. You will be able to search them.',
+      ],
+    },
+    {
       name: 'fixture-en-light',
       dark: false,
       font: '-apple-system,"Helvetica Neue",Arial,sans-serif',

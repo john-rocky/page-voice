@@ -239,6 +239,11 @@ async function recognizeWindow(strip, from, pw, bg, maxVariants = 5) {
   const C = chars.length;
   const variants = [
     { pad: EDGE_PAD, scale: 1, grow: 0 },
+    // Short crops left at native scale sit in a pocket: a clean "Notes for"
+    // (203 px of a 304 px window) decoded as "Yotesow" at margin 0.15, and
+    // stretching the same pixels to fill the window read it correctly at
+    // 0.95. Capped at 2.5× so a one-word crop is not smeared.
+    { pad: EDGE_PAD, scale: 1, grow: 0, fill: true },
     { pad: EDGE_PAD + 10, scale: 0.92, grow: 0 },
     { pad: EDGE_PAD, scale: 0.96, grow: 10 }, // widened bounds: new context
     { pad: EDGE_PAD + 4, scale: 0.85, grow: 0 },
@@ -250,7 +255,10 @@ async function recognizeWindow(strip, from, pw, bg, maxVariants = 5) {
     const f = Math.max(0, from - v.grow);
     const w = Math.min(strip.width - f, pw + v.grow + (from - f));
     const availW = REC_W - 2 * v.pad;
-    const drawnW = Math.min(availW, Math.round(w * v.scale));
+    const natW = Math.round(w * v.scale);
+    const drawnW = v.fill
+      ? Math.min(availW, Math.round(natW * 2.5))
+      : Math.min(availW, natW);
     const drawnH = Math.round(REC_H * v.scale);
     const contentW = Math.min(REC_W, drawnW + 2 * v.pad);
     const win = new OffscreenCanvas(contentW, REC_H);
@@ -280,7 +288,7 @@ async function recognizePiece(strip, profile, from, to, bg, depth = 0) {
   const pw = to - from;
   // Depth-0 windows get the full variant sweep; re-split halves get a
   // cheaper one so a stubborn window can't multiply into dozens of runs.
-  const r = await recognizeWindow(strip, from, pw, bg, depth === 0 ? 5 : 2);
+  const r = await recognizeWindow(strip, from, pw, bg, depth === 0 ? 6 : 2);
   if (r.score >= 0.75 || depth >= 2 || pw < 60) return r;
   const cut = widestInteriorGap(profile, from, to);
   if (cut == null) return r;
@@ -422,6 +430,15 @@ globalThis.__pt = {
       scores: r.lines.map((l) => l.score),
       stats: r.stats,
     };
+  },
+  /** Dev-only: run the recognizer on a caller-built NCHW tensor. Lets
+   * tools-ocr/probe-window.mjs sweep preprocessing choices for one crop. */
+  async recRaw(nchw) {
+    if (!__DEV__) return { text: '', score: 0 };
+    const rec = await runModel(recModel, Float32Array.from(nchw), [1, 3, REC_H, REC_W]);
+    const C = chars.length;
+    const d = ctcDecode(rec.data, rec.data.length / C, C, chars);
+    return { text: d.text, score: d.score };
   },
   /** Dev-only introspection: per det box, the rec strip as a data URL with
    * piece boundaries burned in as red lines, plus each piece's decode. */
