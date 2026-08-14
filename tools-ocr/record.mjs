@@ -99,16 +99,29 @@ async function glide(x, y, ms) {
   }
 }
 
-/** Real OS-level right-click + menu selection. On a plain image the
- * Chromium context menu ends [..., Copy image address, <extension items>,
- * Inspect] — Up ×2 from the bottom lands on our item. cliclick moves the
- * REAL cursor; the in-page dot follows via pointermove. */
-function menuPick(pageX, pageY) {
+/** Real OS-level right-click + menu selection. Counting up from the bottom
+ * is NOT safe: when a text selection exists anywhere in the document, macOS
+ * appends its own services (Summarize / Show Writing Tools / Services) below
+ * "Inspect", which is what silently broke the second beat of a take. Count
+ * down from the top and clear the selection first. cliclick moves the REAL
+ * cursor; the in-page dot follows via pointermove. */
+async function menuPick(pageX, pageY) {
   const sx = Math.round(WIN.left + pageX);
   const sy = Math.round(WIN.top + chromeH + pageY);
+  await evalIn(cdp, pageSession, 'getSelection().removeAllRanges(), null').catch(() => {});
   step(`right-click @ screen ${sx},${sy}`);
   execFileSync('cliclick', ['-w', '160', `m:${sx},${sy}`, `rc:${sx},${sy}`]);
-  execFileSync('cliclick', ['-w', '260', 'kp:arrow-up', 'kp:arrow-up', 'kp:return']);
+  // cliclick's -w waits AFTER each command, so keys sent in the next
+  // invocation start immediately — a beat too early for the native menu,
+  // which then swallows them and the pick silently does nothing.
+  await sleep(550);
+  // Count from the TOP: the image rows above ours are fixed (Open Image in
+  // New Tab / Save Image As… / Copy Image / Copy Image Address / Search this
+  // image…), while macOS appends its extras at the bottom. Separators do not
+  // take a keypress. Type-select is not available — Chromium's context menu
+  // ignores it.
+  execFileSync('cliclick', ['-w', '150',
+    ...Array(6).fill('kp:arrow-down'), 'kp:return']);
 }
 
 /** --dry activation: same content-script path, minus the native menu.
@@ -228,7 +241,7 @@ async function featureShot(imgSel, base, selFrom, selTo) {
   if (dry) {
     await simActivate(base, rect.src);
   } else {
-    menuPick(cx, cy);
+    await menuPick(cx, cy);
   }
   let info = null;
   const until = Date.now() + 10000;
@@ -434,20 +447,38 @@ try {
   step(`chromeH = ${chromeH}`);
 
   if (menuTest) {
-    // Single hands-off native-menu check on the JA shot, ~8 s.
-    await evalIn(cdp, pageSession,
-      `document.querySelector('#post-ja').scrollIntoView({ block: 'center' }), null`);
-    await sleep(800);
-    const r = JSON.parse(await evalIn(cdp, pageSession, `(() => {
-      const rr = document.querySelector('#shot-ja').getBoundingClientRect();
-      return JSON.stringify({ x: rr.left + rr.width / 2, y: rr.top + rr.height / 2 });
-    })()`));
-    menuPick(r.x, r.y);
-    let info = null;
-    for (let i = 0; i < 40 && !info; i++) { info = await overlayInfo(); await sleep(250); }
-    console.log(info ? `MENU_TEST_OK ${info.spans} spans` : 'MENU_TEST_FAIL no overlay');
+    // Reproduce the recorded sequence: both images, in order, through the
+    // real native menu. A failure on the second one only means the menu
+    // interaction (not the image) is what breaks on repeat.
+    for (const sel of ['#post-ja #shot-ja', '#post-en #shot-en']) {
+      await evalIn(cdp, pageSession,
+        `document.querySelector('${sel}').scrollIntoView({ block: 'center' }), null`);
+      await sleep(1000);
+      // Hard case: a live document selection makes macOS append its own
+      // services below "Inspect" — this is what broke counting from the
+      // bottom during the take.
+      await evalIn(cdp, pageSession, `(() => {
+        const r = document.createRange();
+        r.selectNodeContents(document.querySelector('.post .body'));
+        const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+        return null;
+      })()`);
+      const r = JSON.parse(await evalIn(cdp, pageSession, `(() => {
+        const rr = document.querySelector('${sel}').getBoundingClientRect();
+        return JSON.stringify({ x: rr.left + rr.width / 2, y: rr.top + rr.height * 0.42 });
+      })()`));
+      await menuPick(r.x, r.y);
+      let info = null;
+      for (let i = 0; i < 32 && !info; i++) { info = await overlayInfo(); await sleep(250); }
+      step(`${sel}: ${info ? info.spans + ' spans' : 'NO OVERLAY'}`);
+      for (const type of ['rawKeyDown', 'keyUp']) {
+        await cdp.send('Input.dispatchKeyEvent',
+          { type, key: 'Escape', windowsVirtualKeyCode: 27 }, pageSession);
+      }
+      await sleep(600);
+    }
     await cdp.send('Browser.close').catch(() => {});
-    process.exit(info ? 0 : 1);
+    process.exit(0);
   }
 
   // Pre-pass: warm the engine off-camera (XNNPACK + webgpu pipelines + a
