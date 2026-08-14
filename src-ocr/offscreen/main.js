@@ -483,128 +483,132 @@ async function pump() {
 }
 
 // debug/smoke hook: lets CDP automation poll engine state and run OCR
-globalThis.__pt = {
-  get status() { return statusPayload(); },
-  get lastResult() { return lastResult; },
-  async ocrSummary(url, opts) {
-    const r = await requestOcr(url, opts);
-    if (!r.ok) return r;
-    return {
-      ok: true,
-      natural: r.natural,
-      lineCount: r.lines.length,
-      texts: r.lines.map((l) => l.text),
-      scores: r.lines.map((l) => l.score),
-      stats: r.stats,
-    };
-  },
-  /** Dev-only: run the recognizer on a caller-built NCHW tensor. Lets
-   * tools-ocr/probe-window.mjs sweep preprocessing choices for one crop. */
-  async recRaw(nchw) {
-    if (!__DEV__) return { text: '', score: 0 };
-    const rec = await runModel(recModel, Float32Array.from(nchw), [1, 3, REC_H, REC_W]);
-    const C = chars.length;
-    const d = ctcDecode(rec.data, rec.data.length / C, C, chars);
-    return { text: d.text, score: d.score };
-  },
-  /** Dev-only introspection: per det box, the rec strip as a data URL with
-   * piece boundaries burned in as red lines, plus each piece's decode. */
-  async debugOcr(url) {
-    if (!__DEV__) return { ok: false, error: 'dev builds only' };
-    const { bytes } = await fetchImageBytes(url);
-    const bitmap = await createImageBitmap(new Blob([bytes]), { imageOrientation: 'from-image' });
-    const nw = bitmap.width;
-    const nh = bitmap.height;
-    detCtx.drawImage(bitmap, 0, 0, nw, nh, 0, 0, DET_SIZE, DET_SIZE);
-    const rgba = detCtx.getImageData(0, 0, DET_SIZE, DET_SIZE).data;
-    const { nchw, scaleX, scaleY } = detPreprocess(rgba, nw, nh);
-    const det = await runModel(detModel, nchw, [1, 3, DET_SIZE, DET_SIZE]);
-    const boxes = probToBoxes(det.data);
-    const out = [];
-    for (const box of boxes) {
-      const sx = box.x0 * scaleX;
-      const sy = box.y0 * scaleY;
-      const sw = (box.x1 - box.x0 + 1) * scaleX;
-      const sh = (box.y1 - box.y0 + 1) * scaleY;
-      const lw = Math.min(4096, Math.max(1, Math.round(REC_H * (sw / sh))));
-      const strip = new OffscreenCanvas(lw, REC_H);
-      const stripCtx = strip.getContext('2d', { willReadFrequently: true });
-      stripCtx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, lw, REC_H);
-      const stripRgba = stripCtx.getImageData(0, 0, lw, REC_H).data;
-      const { profile, bg } = columnInkProfile(stripRgba, lw, REC_H);
-      const pieces = splitByInk(profile, lw, {
-        maxW: REC_W - 2 * EDGE_PAD,
-        squashLimit: (REC_W - 2 * EDGE_PAD) * 2.2,
-      });
-      const toUrl = async (canvas) => {
-        const blob = await canvas.convertToBlob({ type: 'image/png' });
-        return await new Promise((res, rej) => {
-          const rd = new FileReader();
-          rd.onload = () => res(rd.result);
-          rd.onerror = rej;
-          rd.readAsDataURL(blob);
-        });
+// Debug/smoke hook, dev builds only — the store bundle must not expose
+// an inference surface on the offscreen global.
+if (__DEV__) {
+  globalThis.__pt = {
+    get status() { return statusPayload(); },
+    get lastResult() { return lastResult; },
+    async ocrSummary(url, opts) {
+      const r = await requestOcr(url, opts);
+      if (!r.ok) return r;
+      return {
+        ok: true,
+        natural: r.natural,
+        lineCount: r.lines.length,
+        texts: r.lines.map((l) => l.text),
+        scores: r.lines.map((l) => l.score),
+        stats: r.stats,
       };
-      // exercise the exact runOcr window path per piece; run each input
-      // twice (state-leak probe) and once padded to the full 320 with bg
-      // instead of the preprocessor's −1 fill (padding-value probe)
-      const pieceInfo = [];
-      for (const { from, to } of pieces) {
-        const pw = to - from;
-        if (pw < 3) continue;
-        const drawnW = Math.min(REC_W - 2 * EDGE_PAD, pw);
-        const contentW = drawnW + 2 * EDGE_PAD;
-        const win = new OffscreenCanvas(contentW, REC_H);
-        const winCtx = win.getContext('2d', { willReadFrequently: true });
-        winCtx.fillStyle = `rgb(${bg[0]},${bg[1]},${bg[2]})`;
-        winCtx.fillRect(0, 0, contentW, REC_H);
-        winCtx.drawImage(strip, from, 0, pw, REC_H, EDGE_PAD, 0, drawnW, REC_H);
-        const rgbaPiece = winCtx.getImageData(0, 0, contentW, REC_H).data;
-        const C = chars.length;
-        const decode1 = ctcDecode((await runModel(
-          recModel, recPreprocess(rgbaPiece, contentW), [1, 3, REC_H, REC_W])).data,
-          40, C, chars);
-        const decode2 = ctcDecode((await runModel(
-          recModel, recPreprocess(rgbaPiece, contentW), [1, 3, REC_H, REC_W])).data,
-          40, C, chars);
-        const winFull = new OffscreenCanvas(REC_W, REC_H);
-        const wfCtx = winFull.getContext('2d', { willReadFrequently: true });
-        wfCtx.fillStyle = `rgb(${bg[0]},${bg[1]},${bg[2]})`;
-        wfCtx.fillRect(0, 0, REC_W, REC_H);
-        wfCtx.drawImage(win, 0, 0);
-        const rgbaFull = wfCtx.getImageData(0, 0, REC_W, REC_H).data;
-        const decodeBgPad = ctcDecode((await runModel(
-          recModel, recPreprocess(rgbaFull, REC_W), [1, 3, REC_H, REC_W])).data,
-          40, C, chars);
-        // reconstruct the exact tensor the model saw, as an image
-        const nchw = recPreprocess(rgbaPiece, contentW);
-        const tImg = new ImageData(REC_W, REC_H);
-        for (let i = 0; i < REC_H * REC_W; i++) {
-          tImg.data[i * 4] = Math.round((nchw[i] + 1) * 127.5);
-          tImg.data[i * 4 + 1] = Math.round((nchw[REC_H * REC_W + i] + 1) * 127.5);
-          tImg.data[i * 4 + 2] = Math.round((nchw[2 * REC_H * REC_W + i] + 1) * 127.5);
-          tImg.data[i * 4 + 3] = 255;
+    },
+    /** Dev-only: run the recognizer on a caller-built NCHW tensor. Lets
+     * tools-ocr/probe-window.mjs sweep preprocessing choices for one crop. */
+    async recRaw(nchw) {
+      if (!__DEV__) return { text: '', score: 0 };
+      const rec = await runModel(recModel, Float32Array.from(nchw), [1, 3, REC_H, REC_W]);
+      const C = chars.length;
+      const d = ctcDecode(rec.data, rec.data.length / C, C, chars);
+      return { text: d.text, score: d.score };
+    },
+    /** Dev-only introspection: per det box, the rec strip as a data URL with
+     * piece boundaries burned in as red lines, plus each piece's decode. */
+    async debugOcr(url) {
+      if (!__DEV__) return { ok: false, error: 'dev builds only' };
+      const { bytes } = await fetchImageBytes(url);
+      const bitmap = await createImageBitmap(new Blob([bytes]), { imageOrientation: 'from-image' });
+      const nw = bitmap.width;
+      const nh = bitmap.height;
+      detCtx.drawImage(bitmap, 0, 0, nw, nh, 0, 0, DET_SIZE, DET_SIZE);
+      const rgba = detCtx.getImageData(0, 0, DET_SIZE, DET_SIZE).data;
+      const { nchw, scaleX, scaleY } = detPreprocess(rgba, nw, nh);
+      const det = await runModel(detModel, nchw, [1, 3, DET_SIZE, DET_SIZE]);
+      const boxes = probToBoxes(det.data);
+      const out = [];
+      for (const box of boxes) {
+        const sx = box.x0 * scaleX;
+        const sy = box.y0 * scaleY;
+        const sw = (box.x1 - box.x0 + 1) * scaleX;
+        const sh = (box.y1 - box.y0 + 1) * scaleY;
+        const lw = Math.min(4096, Math.max(1, Math.round(REC_H * (sw / sh))));
+        const strip = new OffscreenCanvas(lw, REC_H);
+        const stripCtx = strip.getContext('2d', { willReadFrequently: true });
+        stripCtx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, lw, REC_H);
+        const stripRgba = stripCtx.getImageData(0, 0, lw, REC_H).data;
+        const { profile, bg } = columnInkProfile(stripRgba, lw, REC_H);
+        const pieces = splitByInk(profile, lw, {
+          maxW: REC_W - 2 * EDGE_PAD,
+          squashLimit: (REC_W - 2 * EDGE_PAD) * 2.2,
+        });
+        const toUrl = async (canvas) => {
+          const blob = await canvas.convertToBlob({ type: 'image/png' });
+          return await new Promise((res, rej) => {
+            const rd = new FileReader();
+            rd.onload = () => res(rd.result);
+            rd.onerror = rej;
+            rd.readAsDataURL(blob);
+          });
+        };
+        // exercise the exact runOcr window path per piece; run each input
+        // twice (state-leak probe) and once padded to the full 320 with bg
+        // instead of the preprocessor's −1 fill (padding-value probe)
+        const pieceInfo = [];
+        for (const { from, to } of pieces) {
+          const pw = to - from;
+          if (pw < 3) continue;
+          const drawnW = Math.min(REC_W - 2 * EDGE_PAD, pw);
+          const contentW = drawnW + 2 * EDGE_PAD;
+          const win = new OffscreenCanvas(contentW, REC_H);
+          const winCtx = win.getContext('2d', { willReadFrequently: true });
+          winCtx.fillStyle = `rgb(${bg[0]},${bg[1]},${bg[2]})`;
+          winCtx.fillRect(0, 0, contentW, REC_H);
+          winCtx.drawImage(strip, from, 0, pw, REC_H, EDGE_PAD, 0, drawnW, REC_H);
+          const rgbaPiece = winCtx.getImageData(0, 0, contentW, REC_H).data;
+          const C = chars.length;
+          const decode1 = ctcDecode((await runModel(
+            recModel, recPreprocess(rgbaPiece, contentW), [1, 3, REC_H, REC_W])).data,
+            40, C, chars);
+          const decode2 = ctcDecode((await runModel(
+            recModel, recPreprocess(rgbaPiece, contentW), [1, 3, REC_H, REC_W])).data,
+            40, C, chars);
+          const winFull = new OffscreenCanvas(REC_W, REC_H);
+          const wfCtx = winFull.getContext('2d', { willReadFrequently: true });
+          wfCtx.fillStyle = `rgb(${bg[0]},${bg[1]},${bg[2]})`;
+          wfCtx.fillRect(0, 0, REC_W, REC_H);
+          wfCtx.drawImage(win, 0, 0);
+          const rgbaFull = wfCtx.getImageData(0, 0, REC_W, REC_H).data;
+          const decodeBgPad = ctcDecode((await runModel(
+            recModel, recPreprocess(rgbaFull, REC_W), [1, 3, REC_H, REC_W])).data,
+            40, C, chars);
+          // reconstruct the exact tensor the model saw, as an image
+          const nchw = recPreprocess(rgbaPiece, contentW);
+          const tImg = new ImageData(REC_W, REC_H);
+          for (let i = 0; i < REC_H * REC_W; i++) {
+            tImg.data[i * 4] = Math.round((nchw[i] + 1) * 127.5);
+            tImg.data[i * 4 + 1] = Math.round((nchw[REC_H * REC_W + i] + 1) * 127.5);
+            tImg.data[i * 4 + 2] = Math.round((nchw[2 * REC_H * REC_W + i] + 1) * 127.5);
+            tImg.data[i * 4 + 3] = 255;
+          }
+          const tCanvas = new OffscreenCanvas(REC_W, REC_H);
+          tCanvas.getContext('2d').putImageData(tImg, 0, 0);
+          pieceInfo.push({ from, to, contentW,
+            text: decode1.text, score: +decode1.score.toFixed(3),
+            text2: decode2.text, textBgPad: decodeBgPad.text,
+            winUrl: await toUrl(win), tensorUrl: await toUrl(tCanvas) });
         }
-        const tCanvas = new OffscreenCanvas(REC_W, REC_H);
-        tCanvas.getContext('2d').putImageData(tImg, 0, 0);
-        pieceInfo.push({ from, to, contentW,
-          text: decode1.text, score: +decode1.score.toFixed(3),
-          text2: decode2.text, textBgPad: decodeBgPad.text,
-          winUrl: await toUrl(win), tensorUrl: await toUrl(tCanvas) });
+        stripCtx.fillStyle = 'rgba(255,0,0,.85)';
+        for (const p of pieces.slice(1)) stripCtx.fillRect(p.from, 0, 2, REC_H);
+        out.push({
+          det: [box.x0, box.y0, box.x1, box.y1],
+          src: [Math.round(sx), Math.round(sy), Math.round(sw), Math.round(sh)],
+          lw,
+          pieces: pieceInfo,
+          stripUrl: await toUrl(strip),
+        });
       }
-      stripCtx.fillStyle = 'rgba(255,0,0,.85)';
-      for (const p of pieces.slice(1)) stripCtx.fillRect(p.from, 0, 2, REC_H);
-      out.push({
-        det: [box.x0, box.y0, box.x1, box.y1],
-        src: [Math.round(sx), Math.round(sy), Math.round(sw), Math.round(sh)],
-        lw,
-        pieces: pieceInfo,
-        stripUrl: await toUrl(strip),
-      });
-    }
-    bitmap.close();
-    return { ok: true, natural: { w: nw, h: nh }, boxes: out };
-  },
-};
+      bitmap.close();
+      return { ok: true, natural: { w: nw, h: nh }, boxes: out };
+    },
+  };
+}
 
 boot();

@@ -359,10 +359,14 @@ function playWav(wav) {
 }
 
 // debug/smoke hook: lets CDP automation poll engine state and speak
-globalThis.__pv = {
-  get status() { return statusPayload(); },
-  speak: (text) => enqueue(text),
-  stop: stopAll,
-};
+// Debug/smoke hook, dev builds only — the store bundle must not expose
+// an inference surface on the offscreen global.
+if (__DEV__) {
+  globalThis.__pv = {
+    get status() { return statusPayload(); },
+    speak: (text) => enqueue(text),
+    stop: stopAll,
+  };
+}
 
 boot();

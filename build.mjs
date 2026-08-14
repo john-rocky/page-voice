@@ -3,13 +3,14 @@
  *   node build.mjs           → dist/        (Page Voice dev: eager engine,
  *                                            localhost test-page matches,
  *                                            audio sink)
- *   node build.mjs --store   → dist-store/  (Page Voice store: on-demand
- *                                            engine, dev hooks compiled out,
- *                                            store name, icons required)
  *   node build.mjs --3d      → dist3d/      (Page 3D dev, from src3d/ +
  *                                            public3d/)
  *   node build.mjs --ocr     → dist-ocr/    (Page Text dev, from src-ocr/ +
  *                                            public-ocr/)
+ *
+ * Add --store to any of them → dist-store/ | dist3d-store/ | dist-ocr-store/.
+ * A store build compiles the dev hooks out (__DEV__ false), drops the
+ * localhost test-page matches, sets the shipping name and the icons.
  *
  * All bundle each entry point with esbuild (classic scripts — content
  * scripts and the MV3 service worker don't take ESM here), copy static files
@@ -22,10 +23,13 @@ import { cpSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 const store = process.argv.includes('--store');
 const three = process.argv.includes('--3d');
 const ocr = process.argv.includes('--ocr');
-if (store && (three || ocr)) throw new Error('--store is only wired up for Page Voice');
 const src = three ? 'src3d' : ocr ? 'src-ocr' : 'src';
 const pub = three ? 'public3d' : ocr ? 'public-ocr' : 'public';
-const outdir = three ? 'dist3d' : ocr ? 'dist-ocr' : store ? 'dist-store' : 'dist';
+const base = three ? 'dist3d' : ocr ? 'dist-ocr' : 'dist';
+const outdir = store ? (three || ocr ? `${base}-store` : 'dist-store') : base;
+// Shipping names: the manifests carry "(dev)" so an unpacked build is never
+// mistaken for the store one in chrome://extensions.
+const STORE_NAME = three ? 'Page 3D' : ocr ? 'Page Text' : 'Page Voice';
 
 rmSync(outdir, { recursive: true, force: true });
 
@@ -42,6 +46,10 @@ await build({
   outdir,
   logLevel: 'info',
   define: { __DEV__: String(!store) },
+  // Fold `if (__DEV__)` away in store builds. minifySyntax (not full minify)
+  // drops the dead branch while leaving names and layout readable, so a
+  // reviewer still reads real code and no debug hook ships.
+  minifySyntax: store,
 });
 
 cpSync(pub, outdir, { recursive: true });
@@ -49,7 +57,7 @@ cpSync('node_modules/@litertjs/core/wasm', `${outdir}/litert-wasm`, { recursive:
 
 if (store) {
   const manifest = JSON.parse(readFileSync(`${outdir}/manifest.json`, 'utf8'));
-  manifest.name = 'Page Voice';
+  manifest.name = STORE_NAME;
   manifest.content_scripts[0].matches = manifest.content_scripts[0].matches
     .filter((m) => !m.includes('127.0.0.1') && !m.includes('localhost'));
   manifest.icons = {

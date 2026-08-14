@@ -474,15 +474,19 @@ async function runDepth(url, { forceRelay = false } = {}) {
 }
 
 // debug/smoke hook: lets CDP automation poll engine state and run depth
-globalThis.__p3 = {
-  get status() { return statusPayload(); },
-  get lastResult() { return lastResult; },
-  async depthSummary(url, opts) {
-    const r = await requestDepth(url, opts);
-    if (!r.ok) return r;
-    return { ok: true, depthW: r.depth.w, depthH: r.depth.h, photoW: r.photo.w,
-      photoH: r.photo.h, normalW: r.normal?.w, normalH: r.normal?.h, stats: r.stats };
-  },
-};
+// Debug/smoke hook, dev builds only — the store bundle must not expose
+// an inference surface on the offscreen global.
+if (__DEV__) {
+  globalThis.__p3 = {
+    get status() { return statusPayload(); },
+    get lastResult() { return lastResult; },
+    async depthSummary(url, opts) {
+      const r = await requestDepth(url, opts);
+      if (!r.ok) return r;
+      return { ok: true, depthW: r.depth.w, depthH: r.depth.h, photoW: r.photo.w,
+        photoH: r.photo.h, normalW: r.normal?.w, normalH: r.normal?.h, stats: r.stats };
+    },
+  };
+}
 
 boot();
