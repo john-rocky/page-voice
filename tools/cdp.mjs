@@ -99,11 +99,12 @@ export async function attachTo(cdp, target) {
   return sessionId;
 }
 
-export async function evalIn(cdp, sessionId, expression, awaitPromise = false) {
+export async function evalIn(cdp, sessionId, expression, awaitPromise = false, timeoutMs = 20000) {
   const { result, exceptionDetails } = await cdp.send(
     'Runtime.evaluate',
     { expression, awaitPromise, returnByValue: true },
     sessionId,
+    timeoutMs,
   );
   if (exceptionDetails) {
     throw new Error(exceptionDetails.exception?.description ?? 'evaluate failed');

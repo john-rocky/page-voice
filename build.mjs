@@ -8,6 +8,8 @@
  *                                            store name, icons required)
  *   node build.mjs --3d      → dist3d/      (Page 3D dev, from src3d/ +
  *                                            public3d/)
+ *   node build.mjs --ocr     → dist-ocr/    (Page Text dev, from src-ocr/ +
+ *                                            public-ocr/)
  *
  * All bundle each entry point with esbuild (classic scripts — content
  * scripts and the MV3 service worker don't take ESM here), copy static files
@@ -19,10 +21,11 @@ import { cpSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 
 const store = process.argv.includes('--store');
 const three = process.argv.includes('--3d');
-if (store && three) throw new Error('--store is not wired up for --3d yet');
-const src = three ? 'src3d' : 'src';
-const pub = three ? 'public3d' : 'public';
-const outdir = three ? 'dist3d' : store ? 'dist-store' : 'dist';
+const ocr = process.argv.includes('--ocr');
+if (store && (three || ocr)) throw new Error('--store is only wired up for Page Voice');
+const src = three ? 'src3d' : ocr ? 'src-ocr' : 'src';
+const pub = three ? 'public3d' : ocr ? 'public-ocr' : 'public';
+const outdir = three ? 'dist3d' : ocr ? 'dist-ocr' : store ? 'dist-store' : 'dist';
 
 rmSync(outdir, { recursive: true, force: true });
 
