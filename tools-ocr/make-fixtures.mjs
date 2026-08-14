@@ -54,7 +54,7 @@ const RENDER = String(function render() {
         'So I built a browser extension that runs',
         'PP-OCRv5 with LiteRT.js, fully on-device.',
         'Right-click any image and the text inside',
-        'becomes selectable, in about half a second.',
+        'becomes selectable, and copyable.',
       ],
     },
   ];

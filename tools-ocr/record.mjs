@@ -460,7 +460,7 @@ try {
   await evalIn(cdp, pageSession,
     `document.querySelector('#post-en').scrollIntoView({ block: 'center', behavior: 'smooth' }), null`);
   await sleep(1400);
-  await featureShot('#shot-en', base, 'Screenshots', 'half a second');
+  await featureShot('#shot-en', base, 'Screenshots', 'copyable');
   mark('end');
 
   if (dry) {

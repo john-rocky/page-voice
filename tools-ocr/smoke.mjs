@@ -43,7 +43,7 @@ const CASES = [
   ['fixture-en-light', 'fixture-en-light.png',
     ['Screenshots are where text goes to die.', 'word inside it',
       'browser extension that runs', 'PP-OCRv5', 'Right-click any',
-      'image and the text inside', 'in about half a second.']],
+      'image and the text inside', 'becomes selectable, and copyable']],
 ];
 for (const [, file] of CASES) {
   if (!existsSync(resolve(outDir, file))) {
