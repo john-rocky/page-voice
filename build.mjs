@@ -29,7 +29,13 @@ const base = three ? 'dist3d' : ocr ? 'dist-ocr' : 'dist';
 const outdir = store ? (three || ocr ? `${base}-store` : 'dist-store') : base;
 // Shipping names: the manifests carry "(dev)" so an unpacked build is never
 // mistaken for the store one in chrome://extensions.
-const STORE_NAME = three ? 'Page 3D' : ocr ? 'Page Text' : 'Page Voice';
+// The store name is also the search key: Chrome Web Store search is the only
+// organic discovery an unknown extension gets, and "Page Text" matches
+// nothing anyone types. Competitors rank on the query itself
+// ("Copy Text from Picture", "Image to Text (OCR)").
+const STORE_NAME = three ? 'Page 3D — see any photo in 3D'
+  : ocr ? 'Page Text — copy text from any image (OCR)'
+  : 'Page Voice';
 
 rmSync(outdir, { recursive: true, force: true });
 

@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Page Text",
+  "name": "Page Text — copy text from any image (OCR)",
   "description": "Right-click any image to select and copy the text inside it. OCR runs in your browser — images never leave your device.",
   "version": "0.1.0",
   "minimum_chrome_version": "128",
