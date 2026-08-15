@@ -85,7 +85,9 @@ if (store) {
   };
   manifest.action.default_icon = manifest.icons;
   writeFileSync(`${outdir}/manifest.json`, JSON.stringify(manifest, null, 2));
-  cpSync('assets/icons', `${outdir}/icons`, { recursive: true });
+  // Page Text gets its own mark — the shared icon is a speech bubble, which
+  // advertises the wrong product. Regenerate with tools/render-icons.mjs.
+  cpSync(ocr ? 'assets/icons-ocr' : 'assets/icons', `${outdir}/icons`, { recursive: true });
 }
 
 console.log(`${outdir}/ ready — load it as an unpacked extension.`);

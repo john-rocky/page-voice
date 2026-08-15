@@ -3,6 +3,8 @@ dist/
 dist3d/
 dist-ocr/
 dist-store/
+dist3d-store/
+dist-ocr-store/
 out/
 out3d/
 out-ocr/
