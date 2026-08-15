@@ -6,6 +6,9 @@
  *
  * Renders once at 4× and downscales with sips, so the small sizes get proper
  * area-averaged antialiasing instead of Chrome's 16px rasterization.
+ *
+ * Goes through CDP rather than `chrome --headless --screenshot`, which hangs
+ * indefinitely on this machine's branded Chrome.
  */
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
