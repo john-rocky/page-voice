@@ -1,0 +1,9 @@
+[
+  { "file": "crop-01-en-18px.png", "truth": "Hello OCR 2026" },
+  { "file": "crop-02-en-28px.png", "truth": "Hello OCR 2026" },
+  { "file": "crop-03-ja-18px.png", "truth": "日本語対応です" },
+  { "file": "crop-04-ja-28px.png", "truth": "日本語対応です" },
+  { "file": "crop-05-ja-44px.png", "truth": "日本語対応です" },
+  { "file": "crop-06-control-en-28px.png", "truth": "LiteRT.js on WebGPU" },
+  { "file": "crop-07-control-ja-28px.png", "truth": "深度推定はブラウザ内" }
+]
