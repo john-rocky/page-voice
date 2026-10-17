@@ -7,6 +7,11 @@ on-device ML, powered by [LiteRT.js](https://www.npmjs.com/package/@litertjs/cor
 Sibling project: [page-demos](https://github.com/john-rocky/page-demos)
 — the same models as zero-install web pages (photo → 3D, text → speech).
 
+Upstream sample: the same three extensions (Page Voice, Page 3D, Page Text)
+are a LiteRT sample at
+[`samples/web_demos/chrome_extension`](https://github.com/google-ai-edge/litert-samples/tree/main/samples/web_demos/chrome_extension)
+in google-ai-edge/litert-samples (merged 2026-10-09).
+
 First effect: **Page Voice** — give any page a voice.
 Second effect (WIP): **Page 3D** — hover any photo to see it in 3D
 (MoGe-2 depth → plane-mesh parallax). Build with `node build.mjs --3d`
