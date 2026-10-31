@@ -81,15 +81,27 @@ and the content script lays a transparent, selectable text layer over the
 image (PDF.js-style), with *Copy all*. Models (~43 MB) come from Hugging
 Face on first use and stay in the Cache API.
 
-**Backends are not interchangeable here.** Detection runs on WebGPU
-(12–16 ms per image). Recognition runs on WASM with the **fp32** weights
-(~21 ms per line window): the WebGPU delegate mis-decodes real text crops
-on this architecture — deterministic, confident errors clustered at line
-starts ("Every day" → "YveerydaYyw", 日 → a) that survive fp32 weights,
-`gpuOptions: {precision:'fp32'}`, and padding changes. The fp16 recognizer
-is not used either, because XNNPACK declines its graph and falls back to
-reference kernels at ~430 ms per line. `tools-ocr/verify.mjs` is the
-harness that establishes this; re-run it when the runtime updates.
+**Backends.** Detection runs on WebGPU (12–16 ms per image). Recognition
+runs on WebGPU too, from a recognizer file made for it. On WebGPU,
+`ppocr_rec_fp32.tflite` mis-decodes real text crops — deterministic,
+confident errors clustered at line starts ("Every day" → "YveerydaYyw",
+日 → a; [LiteRT #9661](https://github.com/google-ai-edge/LiteRT/issues/9661)).
+So with WebGPU the extension downloads `ppocr_rec_fp32_webgpu.tflite`,
+which computes the attention scores as two products over 20 keys instead
+of one over 40. Before using it, the extension reads one fixed line
+(`check-line.png`) on WebGPU and on WASM and compares the character each
+of the 40 output steps picks; if any differs, the extension runs this
+file on WASM instead. The popup shows which backend each model runs on.
+Without WebGPU, recognition runs on WASM with `ppocr_rec_fp32.tflite`
+(~21 ms per line window). On a 12-image test set (screenshots, photos,
+receipts), 0.1.2 copied the same text as 0.1.1 from every image. The
+median time per image (fetch, detection, recognition) over the 11
+smaller images fell from about 1.4 s to about 0.5 s, and the largest
+photo went from about 4.7 s to 1.6 s (Chrome for Testing 156, Apple M4
+Max). The fp16 recognizer is not used, because XNNPACK
+declines its graph and falls back to reference kernels at ~430 ms per
+line. `tools-ocr/verify.mjs` is the harness that first established the
+WebGPU mis-decode.
 
 ```
 node tools-ocr/verify.mjs <chrome-binary> [--profile=<dir>]   # backend equivalence
