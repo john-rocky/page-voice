@@ -58,6 +58,15 @@ await build({
   minifySyntax: store,
 });
 
+// Page Text pins the WebGPU form of its recognizer to a Hub commit; a store
+// package must not ship the placeholder (the download would fail on every
+// browser with WebGPU).
+if (store && ocr && readFileSync(`${outdir}/offscreen.js`, 'utf8').includes('<commit>')) {
+  rmSync(outdir, { recursive: true, force: true });
+  throw new Error('src-ocr/offscreen/main.js still pins the WebGPU recognizer to <commit>: '
+    + 'fill in the Hub commit before a store build.');
+}
+
 cpSync(pub, outdir, { recursive: true });
 // LiteRT.js picks a wasm variant as: !relaxedSimd → compat, threads →
 // threaded, jspi → jspi, else → plain. Chrome 128+ (our minimum) always has

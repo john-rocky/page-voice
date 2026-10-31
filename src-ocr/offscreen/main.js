@@ -3,12 +3,20 @@
  * extension), fetches PP-OCRv5 from Hugging Face (Cache API after the first
  * download), and turns an image URL into positioned text lines.
  *
- * Backend split (verified in tools-ocr/verify.mjs before this was built):
+ * Backend split:
  *   det fp16 → webgpu (12 ms, output match pass; wasm fallback)
- *   rec fp32 → wasm/XNNPACK (~21 ms/line, reference-exact decode)
+ *   rec → webgpu with ppocr_rec_fp32_webgpu.tflite when WebGPU reads a fixed
+ *     check line exactly as WebAssembly (every output step's argmax), else
+ *     wasm/XNNPACK. Without WebGPU: ppocr_rec_fp32.tflite on wasm.
+ * The published ppocr_rec_fp32.tflite misreads on WebGPU (phantom chars at
+ * line starts, 日→a): LiteRT.js computes a batched BATCH_MATMUL with 40
+ * output columns wrongly there (LiteRT issue #9661). The WebGPU form computes
+ * those attention scores as two products over 20 keys each; the check line
+ * (check-line.png = repro/ocr-rec-webgpu-misdecode/crops/crop-01-en-18px.png)
+ * is one the published file misreads on WebGPU, so a GPU or driver on which
+ * the WebGPU form misreads this line keeps the recognizer on WebAssembly.
  * The rec fp16 model is NOT used in the browser: XNNPACK declines its graph
- * (430 ms/line on reference kernels) and the webgpu delegate flips argmaxes
- * on real crops (phantom chars at line starts, 日→a) at any weight precision.
+ * (430 ms/line on reference kernels).
  *
  * Pipeline per request:
  *   url → bytes (fetch here; service-worker relay if COEP blocks it) →
@@ -30,7 +38,14 @@ import {
 const HF = 'https://huggingface.co/litert-community/PP-OCRv5-LiteRT/resolve/main';
 const DET_URL = `${HF}/ppocr_det_fp16.tflite`;
 const REC_URL = `${HF}/ppocr_rec_fp32.tflite`;
+// The WebGPU form of the recognizer, pinned to the Hub commit that added it.
+// <commit> is filled in after the upload; a store build refuses it (build.mjs).
+const REC_WEBGPU_URL = 'https://huggingface.co/litert-community/PP-OCRv5-LiteRT/resolve/<commit>/ppocr_rec_fp32_webgpu.tflite';
 const DICT_URL = `${HF}/ppocrv5_dict.txt`;
+const CHECK_LINE_URL = 'check-line.png';
+// Dev builds only: offscreen.html?checkHook=mismatch makes the check see one
+// output step changed on WebGPU (tests the WebAssembly path of the check).
+const CHECK_HOOK = __DEV__ ? new URLSearchParams(location.search).get('checkHook') : null;
 const CACHE_NAME = 'pagetext-models-v1';
 const CACHE_ENTRIES = 8;
 const MIN_LINE_CHARS = 1;
@@ -44,6 +59,9 @@ const EDGE_PAD = 8;
 let state = 'loading'; // loading → downloading → compiling → ready | error
 let error = null;
 let detBackend = null; // 'webgpu' | 'wasm'
+let recBackend = null; // 'webgpu' | 'wasm'
+let recCheck = null; // {steps, differing} of the WebGPU check, null when it did not run
+let recReason = null;
 let wasmOpts = null;
 let detModel = null;
 let recModel = null;
@@ -73,12 +91,13 @@ function statusPayload() {
     type: 'status',
     state,
     error,
-    env: detBackend ? `det ${detBackend} · rec wasm` : null,
+    env: detBackend ? `det ${detBackend} · rec ${recBackend}` : null,
     flags: {
       webgpu: detBackend ? detBackend === 'webgpu' : null,
       threads: wasmOpts?.threads ?? null,
       crossOriginIsolated: globalThis.crossOriginIsolated,
     },
+    rec: recBackend ? { backend: recBackend, check: recCheck, reason: recReason } : null,
     stats: lastStats,
     downloadedMB,
     runs: runCount,
@@ -152,6 +171,7 @@ async function boot() {
 
     state = 'downloading';
     broadcast(true);
+    const gpu = isWebGPUSupported();
     let base = 0;
     const progress = (received) => {
       downloadedMB = Math.round((base + received) / 1048576);
@@ -159,7 +179,7 @@ async function boot() {
     };
     const detBytes = await fetchCached(DET_URL, progress);
     base += detBytes.length;
-    const recBytes = await fetchCached(REC_URL, progress);
+    const recBytes = await fetchCached(gpu ? REC_WEBGPU_URL : REC_URL, progress);
     base += recBytes.length;
     const dictBytes = await fetchCached(DICT_URL, progress);
     chars = buildCharTable(new TextDecoder().decode(dictBytes));
@@ -169,7 +189,9 @@ async function boot() {
     const numThreads = Math.min(8, navigator.hardwareConcurrency || 4);
     const wasmCompile = { accelerator: 'wasm', cpuOptions: { numThreads } };
     recModel = await loadAndCompile(recBytes, wasmCompile);
-    detBackend = isWebGPUSupported() ? 'webgpu' : 'wasm';
+    recBackend = 'wasm';
+    recReason = 'There is no WebGPU here, so the recognizer runs on WebAssembly.';
+    detBackend = gpu ? 'webgpu' : 'wasm';
     if (detBackend === 'wasm') {
       detModel = await loadAndCompile(detBytes, wasmCompile);
     } else {
@@ -180,12 +202,71 @@ async function boot() {
         detModel = await loadAndCompile(detBytes, wasmCompile);
       }
     }
+    if (gpu) await checkRecognizerOnWebGPU(recBytes);
     state = 'ready';
     broadcast(true);
   } catch (err) {
     state = 'error';
     error = String(err instanceof Error ? err.message : err);
     broadcast(true);
+  }
+}
+
+/** The check line as the recognizer's input: the PNG drawn 1:1, padded like a
+ * rec window (recPreprocess). */
+async function checkLineTensor() {
+  const response = await fetch(CHECK_LINE_URL);
+  if (!response.ok) throw new Error(`check line: HTTP ${response.status}`);
+  const bitmap = await createImageBitmap(await response.blob());
+  const w = Math.min(bitmap.width, REC_W);
+  const canvas = new OffscreenCanvas(w, REC_H);
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  return recPreprocess(ctx.getImageData(0, 0, w, REC_H).data, w);
+}
+
+function argmaxSteps(logits) {
+  const C = chars.length;
+  const steps = [];
+  for (let off = 0; off < logits.length; off += C) {
+    let best = 0;
+    for (let c = 1; c < C; c++) if (logits[off + c] > logits[off + best]) best = c;
+    steps.push(best);
+  }
+  return steps;
+}
+
+/**
+ * Compile the recognizer on WebGPU too, read the check line on both backends,
+ * and move the recognizer to WebGPU only if every output step's argmax is the
+ * same. The model that is not kept is deleted after it ran (a WebGPU model
+ * deleted before its first run can stall LiteRT.js).
+ */
+async function checkRecognizerOnWebGPU(recBytes) {
+  let gpuModel = null;
+  try {
+    gpuModel = await loadAndCompile(recBytes, { accelerator: 'webgpu' });
+    const nchw = await checkLineTensor();
+    const shape = [1, 3, REC_H, REC_W];
+    const a = argmaxSteps((await runModel(recModel, nchw, shape)).data);
+    const b = argmaxSteps((await runModel(gpuModel, nchw, shape)).data);
+    if (CHECK_HOOK === 'mismatch' && b.length) b[0] = (b[0] + 1) % chars.length;
+    let differing = Math.abs(a.length - b.length);
+    for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] !== b[i]) differing++;
+    recCheck = { steps: a.length, differing };
+    if (differing === 0) {
+      recModel.delete();
+      recModel = gpuModel;
+      recBackend = 'webgpu';
+      recReason = `WebGPU read the check line exactly as WebAssembly (${a.length} of ${a.length} output steps), so the recognizer runs on WebGPU.`;
+    } else {
+      gpuModel.delete();
+      recReason = `WebGPU read the check line differently from WebAssembly (${differing} of ${a.length} output steps), so the recognizer runs on WebAssembly.`;
+    }
+  } catch (err) {
+    try { gpuModel?.delete(); } catch { /* ignore */ }
+    recReason = `WebGPU could not run the recognizer (${err instanceof Error ? err.message : err}), so it runs on WebAssembly.`;
   }
 }
 
