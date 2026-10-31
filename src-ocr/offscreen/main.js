@@ -39,8 +39,8 @@ const HF = 'https://huggingface.co/litert-community/PP-OCRv5-LiteRT/resolve/main
 const DET_URL = `${HF}/ppocr_det_fp16.tflite`;
 const REC_URL = `${HF}/ppocr_rec_fp32.tflite`;
 // The WebGPU form of the recognizer, pinned to the Hub commit that added it.
-// <commit> is filled in after the upload; a store build refuses it (build.mjs).
-const REC_WEBGPU_URL = 'https://huggingface.co/litert-community/PP-OCRv5-LiteRT/resolve/<commit>/ppocr_rec_fp32_webgpu.tflite';
+// A store build refuses the placeholder this URL had before the upload (build.mjs).
+const REC_WEBGPU_URL = 'https://huggingface.co/litert-community/PP-OCRv5-LiteRT/resolve/c4c99088ffe3a57073706128146f30c3a00425f9/ppocr_rec_fp32_webgpu.tflite';
 const DICT_URL = `${HF}/ppocrv5_dict.txt`;
 const CHECK_LINE_URL = 'check-line.png';
 // Dev builds only: offscreen.html?checkHook=mismatch makes the check see one
